@@ -4,4 +4,9 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "fca-utils",
+]
+
+[tool.uv.sources]
+fca-utils = { git = "https://github.com/marcelnoehre/fca-utils.git" }
