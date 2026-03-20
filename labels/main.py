@@ -11,7 +11,7 @@ from intersection import find_intersections, build_planar_graph
 from topology import betti_1, extract_faces, normalize_positions, label_fits
 from plot import plot_lattice
 from label import measure_ink_mm
-from placement import compute_label_candidates
+from placement import compute_label_candidates, filter_candidates_by_edges
 import matplotlib
 
 # ---------------------------------------------------------------------------
@@ -119,10 +119,15 @@ for node_id in lattice.nodes:
         fontsize_pt=candidate_fontsize_pt,
     ))
 print(f"\nLabel candidates computed for {len(label_candidates)} nodes")
+
+# ---------------------------------------------------------------------------
+# Filter candidates that collide with incident face edges
+# ---------------------------------------------------------------------------
+label_candidates = filter_candidates_by_edges(
+    G, label_candidates, bounded_faces, outer_nodes
+)
 for node_id, candidates in label_candidates.items():
-    print(f"  Node {node_id} ({node_label(node_id)}):")
-    for c in candidates:
-        print(f"    anchor={c.anchor}, center={c.center}")
+    print(f"  Node {node_id}: {len(candidates)} candidates remaining")
 
 # ---------------------------------------------------------------------------
 # Plot

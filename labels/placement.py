@@ -15,9 +15,10 @@ Requires normalize_positions() to have been called on G first.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Set, Tuple
 
 import networkx as nx
+from shapely.geometry import LineString, box
 
 from label import measure_ink_mm
 
@@ -124,3 +125,76 @@ def compute_label_candidates(
         candidates[node] = node_candidates
 
     return candidates
+
+
+def _face_edges(face: List) -> Set[frozenset]:
+    """Return the set of undirected edges for a face."""
+    n = len(face)
+    return {frozenset((face[i], face[(i + 1) % n])) for i in range(n)}
+
+
+def _node_to_face_edges(
+        node: int,
+        bounded_faces: List[List],
+        outer_nodes: List,
+) -> List[Tuple]:
+    """
+    Collect all unique edges from faces that contain `node`,
+    including the outer face. Returns a list of (u, v) tuples.
+    """
+    all_faces = bounded_faces + [outer_nodes]
+    seen: Set[frozenset] = set()
+    edges = []
+    for face in all_faces:
+        if node not in face:
+            continue
+        for e in _face_edges(face):
+            if e not in seen:
+                seen.add(e)
+                u, v = tuple(e)
+                edges.append((u, v))
+    return edges
+
+
+def filter_candidates_by_edges(
+        G: nx.Graph,
+        candidates: Dict[int, List[LabelCandidate]],
+        bounded_faces: List[List],
+        outer_nodes: List,
+) -> Dict[int, List[LabelCandidate]]:
+    """
+    Remove candidates whose inner bounding box (ink area, no padding)
+    is crossed by any edge of the faces the node belongs to,
+    excluding edges directly incident to the node itself.
+
+    Parameters
+    ----------
+    G             : graph with 'pos' attributes on every node
+    candidates    : output of compute_label_candidates
+    bounded_faces : bounded face node-lists from extract_faces
+    outer_nodes   : outer face node-list from extract_faces
+
+    Returns
+    -------
+    dict with same keys, each value being the surviving candidates
+    """
+    filtered: Dict[int, List[LabelCandidate]] = {}
+
+    for node, node_candidates in candidates.items():
+        # All edges of incident faces, excluding those touching the node itself
+        incident_edges = _node_to_face_edges(node, bounded_faces, outer_nodes)
+        lines = [
+            LineString([G.nodes[u]['pos'], G.nodes[v]['pos']])
+            for u, v in incident_edges
+        ]
+
+        surviving = []
+        for candidate in node_candidates:
+            ibl, ibr, itr, itl = candidate.inner_bbox_corners
+            inner_shape = box(ibl[0], ibl[1], itr[0], itr[1])
+            if not any(inner_shape.intersects(line) for line in lines):
+                surviving.append(candidate)
+
+        filtered[node] = surviving
+
+    return filtered
