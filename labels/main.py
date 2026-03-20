@@ -8,7 +8,7 @@ the face-area diagram with all candidate positions shown.
 from data.parser import Parser
 from fca.lattice import Lattice
 from intersection import find_intersections, build_planar_graph
-from topology import betti_1, extract_faces, normalize_positions, label_fits
+from topology import betti_1, extract_faces, normalize_positions
 from plot import plot_lattice
 from label import measure_ink_mm
 from placement import compute_label_candidates, filter_candidates_by_edges, restrict_outer_node_candidates, filter_candidates_by_nodes
@@ -110,17 +110,6 @@ candidate_fontsize_pt = fontsize_pt * _scale
 print(f"LaTeX upscale factor: {_scale:.3f} → candidate fontsize: {candidate_fontsize_pt:.1f}pt")
 
 # ---------------------------------------------------------------------------
-# Label fit check per face (use the largest label as a conservative bound)
-# ---------------------------------------------------------------------------
-max_label = max((node_label(n) for n in lattice.nodes), key=lambda t: sum(measure_ink_mm(t, candidate_fontsize_pt)))
-ink_w_mm, ink_h_mm = measure_ink_mm(max_label, candidate_fontsize_pt)
-print(f"\nLargest label ink size: {ink_w_mm:.2f} mm x {ink_h_mm:.2f} mm")
-
-for i, face in enumerate(bounded_faces):
-    fits = label_fits(G, face, ink_w_mm, ink_h_mm, PHYSICAL_HEIGHT_MM)
-    print(f"Face {i}: label {'fits' if fits else 'does not fit'}")
-
-# ---------------------------------------------------------------------------
 # Compute label placement candidates (extent=below, intent=above)
 # ---------------------------------------------------------------------------
 label_candidates = {}        # node_id → list of LabelCandidate
@@ -177,6 +166,13 @@ label_candidates = filter_candidates_by_edges(
 )
 for node_id, candidates in label_candidates.items():
     print(f"  Node {node_id}: {len(candidates)} candidates remaining: {[c.anchor for c in candidates]}")
+
+# ---------------------------------------------------------------------------
+# TODO: Tie Breaker: if both labels of same type remaining
+# - check direction of edges to lower/upper neighbors 
+# - if left drop anchored right
+# - if right drop anchored left
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Plot

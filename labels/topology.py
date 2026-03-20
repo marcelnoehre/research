@@ -149,36 +149,3 @@ def extract_faces(G: nx.Graph):
     centers       = [_centroid(G, f) for f in bounded_faces]
 
     return bounded_faces, outer_nodes, areas, centers
-
-
-def label_fits(G: nx.Graph,
-               face_nodes,
-               label_w_mm: float,
-               label_h_mm: float,
-               physical_height_mm: float) -> bool:
-    """
-    Check whether a label of size (label_w_mm x label_h_mm) fits inside
-    the axis-aligned bounding box of a face, given the physical drawing height.
-
-    Requires normalize_positions() to have been called first.
-
-    Parameters
-    ----------
-    G                  : graph with normalized 'pos' attributes
-    face_nodes         : ordered node-list of the face (from extract_faces)
-    label_w_mm         : label ink width in mm  (from label.py)
-    label_h_mm         : label ink height in mm (from label.py)
-    physical_height_mm : how tall the drawing is in mm
-    """
-    if 'normalized_height' not in G.graph:
-        raise ValueError("Call normalize_positions(G) before label_fits().")
-
-    mm_per_unit = physical_height_mm / G.graph['normalized_height']
-
-    pts = [G.nodes[n]['pos'] for n in face_nodes]
-    minx, miny, maxx, maxy = Polygon(pts).bounds
-
-    face_w_mm = (maxx - minx) * mm_per_unit
-    face_h_mm = (maxy - miny) * mm_per_unit
-
-    return face_w_mm >= label_w_mm and face_h_mm >= label_h_mm
