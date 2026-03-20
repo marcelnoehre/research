@@ -22,7 +22,7 @@ matplotlib.rcParams.update({
     "font.family": "serif",
 })
 
-def _measure_ink_mm(text: str, fontsize_pt: float) -> tuple[float, float]:
+def measure_ink_mm(text: str, fontsize_pt: float) -> tuple[float, float]:
     """Return (ink_width_mm, ink_height_mm) by rasterising at 150 DPI."""
     DPI = 150.0
     fig, ax = plt.subplots(figsize=(8, 3), dpi=DPI)
@@ -55,13 +55,13 @@ def render_label(
         output_path: str = "label.pdf",
 ) -> None:
     fontsize_pt = matplotlib.rcParams.get('font.size', 10.0)
-    ink_w_mm, ink_h_mm = _measure_ink_mm(text, fontsize_pt)
+    ink_w_mm, ink_h_mm = measure_ink_mm(text, fontsize_pt)
 
     outer_w_mm = ink_w_mm + 2 * padding_mm
     outer_h_mm = ink_h_mm + 2 * padding_mm
 
-    print(f"Inner box : {ink_w_mm:.2f} mm × {ink_h_mm:.2f} mm")
-    print(f"Outer box : {outer_w_mm:.2f} mm × {outer_h_mm:.2f} mm  (padding = {padding_mm} mm)")
+    print(f"Inner box : {ink_w_mm:.2f} mm x {ink_h_mm:.2f} mm")
+    print(f"Outer box : {outer_w_mm:.2f} mm x {outer_h_mm:.2f} mm  (padding = {padding_mm} mm)")
 
     # ── Figure setup: 1 data unit = 1 mm ─────────────────────────────────
     # Size the figure so the axes fill it exactly and the coordinate scale

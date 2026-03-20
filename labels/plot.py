@@ -40,7 +40,8 @@ def plot_lattice(
     G            : planar graph (used for node positions of synthetic nodes)
     context      : FCA formal context
     concepts     : list of concept node ids to draw
-    coordinates  : dict mapping concept id → (x, y)
+    coordinates  : dict mapping concept id → (x, y) — used only as fallback
+                   if G nodes have normalized 'pos', those take priority
     output_path  : where to save the PDF
     title        : window title
     annotations  : if True, label each node with its index
@@ -52,6 +53,12 @@ def plot_lattice(
     """
     lattice_view = ConceptLattice.from_context(context)
     cmap = cm.YlOrRd
+
+    # Use normalized positions from G if available, fall back to coordinates dict
+    def pos(node):
+        if node in G.nodes and 'pos' in G.nodes[node]:
+            return G.nodes[node]['pos']
+        return coordinates[node]
 
     fig, ax = plt.subplots(figsize=(8, 6))
     fig.canvas.manager.set_window_title(title)
@@ -73,7 +80,7 @@ def plot_lattice(
 
     # Concept vertices
     for concept in concepts:
-        x, y = coordinates[concept]
+        x, y = pos(concept)
         ax.scatter(x, y, facecolor='white', edgecolor='black', linewidth=2.5, s=150, zorder=4)
         if annotations:
             ax.annotate(
@@ -84,8 +91,8 @@ def plot_lattice(
 
     # Cover-relation edges
     for i, j in Lattice(context).cover_relations():
-        x0, y0 = np.array(coordinates[i])
-        x1, y1 = np.array(coordinates[j])
+        x0, y0 = pos(i)
+        x1, y1 = pos(j)
         ax.plot([x0, x1], [y0, y1], color='black', linewidth=2.5, zorder=2)
 
     # Intersection markers
