@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Set, Tuple
 
 import networkx as nx
-from shapely.geometry import LineString, box
+from shapely.geometry import LineString, Point, box
 
 from label import measure_ink_mm
 
@@ -30,14 +30,16 @@ class LabelCandidate:
 
     Attributes
     ----------
-    anchor            : which corner of the outer bbox is placed at the node position
-    bbox_corners      : outer bbox (BL, BR, TR, TL) in graph units
-    inner_bbox_corners: inner (ink) bbox (BL, BR, TR, TL) in graph units
-    center            : center of the outer bbox in graph units
+    anchor               : which corner of the outer bbox is placed at the node position
+    bbox_corners         : outer bbox (BL, BR, TR, TL) in graph units
+    inner_bbox_corners   : inner (ink) bbox (BL, BR, TR, TL) in graph units
+    expanded_bbox_corners: outer bbox expanded on the two free sides for node exclusion check
+    center               : center of the outer bbox in graph units
     """
     anchor: str
-    bbox_corners: Tuple[Tuple, Tuple, Tuple, Tuple]         # outer: BL, BR, TR, TL
-    inner_bbox_corners: Tuple[Tuple, Tuple, Tuple, Tuple]   # inner: BL, BR, TR, TL
+    bbox_corners: Tuple[Tuple, Tuple, Tuple, Tuple]
+    inner_bbox_corners: Tuple[Tuple, Tuple, Tuple, Tuple]
+    expanded_bbox_corners: Tuple[Tuple, Tuple, Tuple, Tuple]
     center: Tuple[float, float]
 
 
@@ -95,6 +97,17 @@ def compute_label_candidates(
         'bottom_right': (-half_w,  half_h),
     }
 
+    # Expansion = 2 * padding in each free direction (in graph units)
+    exp_x = (2 * padding_x_mm * units_per_mm)
+    exp_y = (2 * padding_y_mm * units_per_mm)
+
+    _expand_factors: Dict[str, Tuple[float, float, float, float]] = {
+        'bottom_right': (exp_x, 0,     0,     exp_y),
+        'bottom_left':  (0,     exp_x, 0,     exp_y),
+        'top_right':    (exp_x, 0,     exp_y, 0    ),
+        'top_left':     (0,     exp_x, exp_y, 0    ),
+    }
+
     candidates: Dict[int, List[LabelCandidate]] = {}
 
     for node in concepts:
@@ -115,16 +128,113 @@ def compute_label_candidates(
             itr = (cx + half_iw, cy + half_ih)
             itl = (cx - half_iw, cy + half_ih)
 
+            dl, dr, db, dt = _expand_factors[anchor]
+            ebl = (bl[0] - dl, bl[1] - db)
+            etr = (tr[0] + dr, tr[1] + dt)
+            ebr = (etr[0], ebl[1])
+            etl = (ebl[0], etr[1])
+
             node_candidates.append(LabelCandidate(
                 anchor=anchor,
                 bbox_corners=(bl, br, tr, tl),
                 inner_bbox_corners=(ibl, ibr, itr, itl),
+                expanded_bbox_corners=(ebl, ebr, etr, etl),
                 center=(cx, cy),
             ))
 
         candidates[node] = node_candidates
 
     return candidates
+
+
+def restrict_outer_node_candidates(
+        G: nx.Graph,
+        candidates: Dict[int, List[LabelCandidate]],
+        outer_nodes: List,
+        top_node: int,
+        bottom_node: int,
+) -> Dict[int, List[LabelCandidate]]:
+    """
+    For nodes on the outer face, restrict candidates to those pointing
+    away from the interior of the diagram:
+
+      - leftmost outer nodes  → keep only right-side anchors (top_right, bottom_right)
+      - rightmost outer nodes → keep only left-side anchors  (top_left,  bottom_left)
+      - top node (id=top_node)    → keep only top anchors    (top_left,  top_right)
+      - bottom node (id=bottom_node) → keep only bottom anchors (bottom_left, bottom_right)
+      - corner nodes get the intersection of both rules
+
+    Non-outer nodes are left unchanged.
+
+    Parameters
+    ----------
+    G           : graph with normalised 'pos' attributes
+    candidates  : output of compute_label_candidates
+    outer_nodes : ordered node-list of the outer face
+    top_node    : node id of the top of the lattice (e.g. 0)
+    bottom_node : node id of the bottom of the lattice (e.g. max id)
+    """
+    if not outer_nodes:
+        return candidates
+
+    outer_set = set(outer_nodes)
+
+    # Determine left/right split from x-coordinates of outer nodes
+    xs = [G.nodes[n]['pos'][0] for n in outer_nodes if isinstance(n, int)]
+    if not xs:
+        return candidates
+    x_mid = (min(xs) + max(xs)) / 2.0
+
+    restricted = dict(candidates)  # shallow copy — we replace lists, not mutate
+
+    for node, node_candidates in candidates.items():
+        if node not in outer_set:
+            continue
+
+        allowed: set[str] = {'top_left', 'top_right', 'bottom_left', 'bottom_right'}
+
+        if node == top_node:
+            allowed &= {'bottom_left', 'bottom_right'}
+        elif node == bottom_node:
+            allowed &= {'top_left', 'top_right'}
+        else:
+            x = G.nodes[node]['pos'][0]
+            if x <= x_mid:
+                allowed &= {'top_right', 'bottom_right'}   # left side → point right
+            else:
+                allowed &= {'top_left', 'bottom_left'}     # right side → point left
+
+        restricted[node] = [c for c in node_candidates if c.anchor in allowed]
+
+    return restricted
+
+
+def filter_candidates_by_nodes(
+        G: nx.Graph,
+        candidates: Dict[int, List[LabelCandidate]],
+        concepts: List[int],
+) -> Dict[int, List[LabelCandidate]]:
+    """
+    Remove candidates whose expanded outer bbox contains any other concept node.
+    The expanded bbox grows the two free sides (away from anchor) by 2x the bbox size.
+    """
+    filtered: Dict[int, List[LabelCandidate]] = {}
+
+    for node, node_candidates in candidates.items():
+        surviving = []
+        for candidate in node_candidates:
+            ebl, ebr, etr, etl = candidate.expanded_bbox_corners
+            expanded = box(ebl[0], ebl[1], etr[0], etr[1])
+            occupied = any(
+                expanded.contains(Point(G.nodes[other]['pos']))
+                for other in concepts
+                if other != node and other in G.nodes
+            )
+            if not occupied:
+                surviving.append(candidate)
+        filtered[node] = surviving
+
+    return filtered
 
 
 def _face_edges(face: List) -> Set[frozenset]:
@@ -161,11 +271,11 @@ def filter_candidates_by_edges(
         candidates: Dict[int, List[LabelCandidate]],
         bounded_faces: List[List],
         outer_nodes: List,
+        skip_nodes: set = None,
 ) -> Dict[int, List[LabelCandidate]]:
     """
     Remove candidates whose inner bounding box (ink area, no padding)
-    is crossed by any edge of the faces the node belongs to,
-    excluding edges directly incident to the node itself.
+    is crossed by any edge of the faces the node belongs to.
 
     Parameters
     ----------
@@ -173,15 +283,20 @@ def filter_candidates_by_edges(
     candidates    : output of compute_label_candidates
     bounded_faces : bounded face node-lists from extract_faces
     outer_nodes   : outer face node-list from extract_faces
+    skip_nodes    : node ids to skip edge filtering entirely (e.g. top/bottom)
 
     Returns
     -------
     dict with same keys, each value being the surviving candidates
     """
+    skip_nodes = skip_nodes or set()
     filtered: Dict[int, List[LabelCandidate]] = {}
 
     for node, node_candidates in candidates.items():
-        # All edges of incident faces, excluding those touching the node itself
+        if node in skip_nodes:
+            filtered[node] = node_candidates
+            continue
+
         incident_edges = _node_to_face_edges(node, bounded_faces, outer_nodes)
         lines = [
             LineString([G.nodes[u]['pos'], G.nodes[v]['pos']])

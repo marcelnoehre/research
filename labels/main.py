@@ -11,7 +11,7 @@ from intersection import find_intersections, build_planar_graph
 from topology import betti_1, extract_faces, normalize_positions, label_fits
 from plot import plot_lattice
 from label import measure_ink_mm
-from placement import compute_label_candidates, filter_candidates_by_edges
+from placement import compute_label_candidates, filter_candidates_by_edges, restrict_outer_node_candidates, filter_candidates_by_nodes
 import matplotlib
 
 # ---------------------------------------------------------------------------
@@ -121,13 +121,28 @@ for node_id in lattice.nodes:
 print(f"\nLabel candidates computed for {len(label_candidates)} nodes")
 
 # ---------------------------------------------------------------------------
+# Restrict outer nodes to outward-facing candidates
+# ---------------------------------------------------------------------------
+top_node    = min(lattice.nodes)   # node 0 = top of lattice
+bottom_node = max(lattice.nodes)   # node N = bottom of lattice
+label_candidates = restrict_outer_node_candidates(
+    G, label_candidates, outer_nodes, top_node, bottom_node
+)
+
+# ---------------------------------------------------------------------------
+# Filter candidates that contain another concept node in their outer bbox
+# ---------------------------------------------------------------------------
+label_candidates = filter_candidates_by_nodes(G, label_candidates, lattice.nodes)
+
+# ---------------------------------------------------------------------------
 # Filter candidates that collide with incident face edges
 # ---------------------------------------------------------------------------
 label_candidates = filter_candidates_by_edges(
-    G, label_candidates, bounded_faces, outer_nodes
+    G, label_candidates, bounded_faces, outer_nodes,
+    skip_nodes={top_node, bottom_node}
 )
 for node_id, candidates in label_candidates.items():
-    print(f"  Node {node_id}: {len(candidates)} candidates remaining")
+    print(f"  Node {node_id}: {len(candidates)} candidates remaining: {[c.anchor for c in candidates]}")
 
 # ---------------------------------------------------------------------------
 # Plot

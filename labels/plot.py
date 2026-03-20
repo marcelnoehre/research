@@ -50,6 +50,15 @@ def _draw_candidate(
         zorder=3,
     ))
 
+    # Expanded bbox — dotted outline only, no fill
+    ebl, ebr, etr, etl = candidate.expanded_bbox_corners
+    ax.add_patch(mpatches.Polygon(
+        [ebl, ebr, etr, etl], closed=True,
+        facecolor='none', edgecolor=colour,
+        alpha=0.3, linestyle=':', linewidth=0.8,
+        zorder=3,
+    ))
+
     # Small dot at the anchor corner
     anchor_pt = {
         'top_left':     tl,
