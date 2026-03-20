@@ -189,8 +189,9 @@ def plot_lattice(
     text_colour_pairs = []
     if show_label_candidates and label_candidates:
         for node_id, candidates in label_candidates.items():
-            text = label_texts.get(node_id, str(node_id))
             for candidate in candidates:
+                text = label_texts.get((node_id, candidate.label_type),
+                       label_texts.get(node_id, str(node_id)))
                 txt = _draw_candidate(ax, candidate, text, fontsize_pt)
                 text_colour_pairs.append((txt, _ANCHOR_COLOURS[candidate.anchor]))
 

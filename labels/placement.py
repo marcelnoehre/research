@@ -31,12 +31,14 @@ class LabelCandidate:
     Attributes
     ----------
     anchor               : which corner of the outer bbox is placed at the node position
+    label_type           : 'extent' (objects, below node) or 'intent' (attributes, above node)
     bbox_corners         : outer bbox (BL, BR, TR, TL) in graph units
     inner_bbox_corners   : inner (ink) bbox (BL, BR, TR, TL) in graph units
     expanded_bbox_corners: outer bbox expanded on the two free sides for node exclusion check
     center               : center of the outer bbox in graph units
     """
     anchor: str
+    label_type: str                                           # 'extent' | 'intent'
     bbox_corners: Tuple[Tuple, Tuple, Tuple, Tuple]
     inner_bbox_corners: Tuple[Tuple, Tuple, Tuple, Tuple]
     expanded_bbox_corners: Tuple[Tuple, Tuple, Tuple, Tuple]
@@ -48,15 +50,13 @@ def compute_label_candidates(
         concepts: List[int],
         label_text: str,
         physical_height_mm: float,
+        label_type: str = 'extent',
         padding_x_mm: float = 3.0,
         padding_y_mm: float = 2.0,
         fontsize_pt: float = 10.0,
 ) -> Dict[int, List[LabelCandidate]]:
     """
-    For every concept node, return 4 candidate label placements.
-
-    Each placement anchors one corner of the label's outer bounding box
-    to the node's (normalised) position.
+    For every concept node, return candidate label placements.
 
     Parameters
     ----------
@@ -64,16 +64,26 @@ def compute_label_candidates(
     concepts           : list of concept node ids
     label_text         : the label string (used to measure ink size)
     physical_height_mm : actual drawing height in mm (sets the unit scale)
+    label_type         : 'extent' → only bottom anchors (objects, below node)
+                         'intent' → only top anchors    (attributes, above node)
     padding_x_mm       : horizontal padding around the ink box
     padding_y_mm       : vertical padding around the ink box
     fontsize_pt        : font size in points
 
     Returns
     -------
-    dict mapping concept node id → list of 4 LabelCandidate objects
+    dict mapping concept node id → list of LabelCandidate objects
     """
     if 'normalized_height' not in G.graph:
         raise ValueError("Call normalize_positions(G) before compute_label_candidates().")
+
+    # Restrict anchors by label type
+    if label_type == 'extent':
+        allowed_anchors = {'top_left', 'top_right'}      # objects above node, anchor at bottom
+    elif label_type == 'intent':
+        allowed_anchors = {'bottom_left', 'bottom_right'} # attributes below node, anchor at top
+    else:
+        raise ValueError(f"label_type must be 'extent' or 'intent', got '{label_type}'")
 
     mm_per_unit = physical_height_mm / G.graph['normalized_height']
     units_per_mm = 1.0 / mm_per_unit
@@ -115,6 +125,8 @@ def compute_label_candidates(
 
         node_candidates: List[LabelCandidate] = []
         for anchor, (dx, dy) in anchor_offsets.items():
+            if anchor not in allowed_anchors:
+                continue
             cx = node_x + dx
             cy = node_y + dy
 
@@ -136,6 +148,7 @@ def compute_label_candidates(
 
             node_candidates.append(LabelCandidate(
                 anchor=anchor,
+                label_type=label_type,
                 bbox_corners=(bl, br, tr, tl),
                 inner_bbox_corners=(ibl, ibr, itr, itl),
                 expanded_bbox_corners=(ebl, ebr, etr, etl),
