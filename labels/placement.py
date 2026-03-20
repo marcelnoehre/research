@@ -97,9 +97,9 @@ def compute_label_candidates(
         'bottom_right': (-half_w,  half_h),
     }
 
-    # Expansion = 2 * padding in each free direction (in graph units)
-    exp_x = (2 * padding_x_mm * units_per_mm)
-    exp_y = (2 * padding_y_mm * units_per_mm)
+    # Expansion = 1 * padding in each free direction, doubling the total gap
+    exp_x = (padding_x_mm * units_per_mm)
+    exp_y = (padding_y_mm * units_per_mm)
 
     _expand_factors: Dict[str, Tuple[float, float, float, float]] = {
         'bottom_right': (exp_x, 0,     0,     exp_y),
