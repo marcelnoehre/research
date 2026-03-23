@@ -279,6 +279,76 @@ def _node_to_face_edges(
     return edges
 
 
+def filter_candidates_by_neighbor_direction(
+        G: nx.Graph,
+        candidates: Dict[int, List[LabelCandidate]],
+        lattice,
+        top_node: int,
+        bottom_node: int,
+) -> Dict[int, List[LabelCandidate]]:
+    """
+    For nodes that still have 2 candidates of the same label_type, use the
+    direction of cover edges to keep only the non-blocked one.
+
+    Extent (top_* anchors, label above node):
+        - check children (lower neighbors)
+        - only right child  → keep top_right  (anchor on right, label extends left — clear)
+        - only left child   → keep top_left   (anchor on left,  label extends right — clear)
+        - both sides        → skip (keep both)
+
+    Intent (bottom_* anchors, label below node):
+        - check parents (upper neighbors)
+        - only right parent → keep bottom_right
+        - only left parent  → keep bottom_left
+        - both sides        → skip (keep both)
+
+    Groups with != 2 candidates are left unchanged.
+    """
+    result: Dict[int, List[LabelCandidate]] = {}
+
+    for node, node_candidates in candidates.items():
+        if not node_candidates:
+            result[node] = node_candidates
+            continue
+
+        node_x = G.nodes[node]['pos'][0]
+
+        by_type: Dict[str, List[LabelCandidate]] = {}
+        for c in node_candidates:
+            by_type.setdefault(c.label_type, []).append(c)
+
+        kept = []
+        for ltype, group in by_type.items():
+            if len(group) != 2:
+                kept.extend(group)
+                continue
+
+            if ltype == 'extent' and node != top_node:
+                neighbors = lattice.children(node)
+            elif ltype == 'intent' and node != bottom_node:
+                neighbors = lattice.parents(node)
+            else:
+                kept.extend(group)
+                continue
+
+            has_left  = any(G.nodes[nb]['pos'][0] < node_x for nb in neighbors)
+            has_right = any(G.nodes[nb]['pos'][0] > node_x for nb in neighbors)
+
+            if has_left and not has_right:
+                # edge goes left → keep anchor on left (label extends right, away from edge)
+                kept.extend(c for c in group if c.anchor.endswith('left'))
+            elif has_right and not has_left:
+                # edge goes right → keep anchor on right (label extends left, away from edge)
+                kept.extend(c for c in group if c.anchor.endswith('right'))
+            else:
+                # both or neither — skip
+                kept.extend(group)
+
+        result[node] = kept
+
+    return result
+
+
 def filter_candidates_by_edges(
         G: nx.Graph,
         candidates: Dict[int, List[LabelCandidate]],

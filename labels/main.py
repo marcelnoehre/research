@@ -11,7 +11,7 @@ from intersection import find_intersections, build_planar_graph
 from topology import betti_1, extract_faces, normalize_positions
 from plot import plot_lattice
 from label import measure_ink_mm
-from placement import compute_label_candidates, filter_candidates_by_edges, restrict_outer_node_candidates, filter_candidates_by_nodes
+from placement import compute_label_candidates, filter_candidates_by_edges, restrict_outer_node_candidates, filter_candidates_by_nodes, filter_candidates_by_neighbor_direction
 import matplotlib
 
 # ---------------------------------------------------------------------------
@@ -164,15 +164,16 @@ label_candidates = filter_candidates_by_edges(
     G, label_candidates, bounded_faces, outer_nodes,
     skip_nodes={top_node, bottom_node}
 )
-for node_id, candidates in label_candidates.items():
-    print(f"  Node {node_id}: {len(candidates)} candidates remaining: {[c.anchor for c in candidates]}")
 
 # ---------------------------------------------------------------------------
-# TODO: Tie Breaker: if both labels of same type remaining
-# - check direction of edges to lower/upper neighbors 
-# - if left drop anchored right
-# - if right drop anchored left
+# Filter by neighbor direction if 2 candidates of same type remain
 # ---------------------------------------------------------------------------
+label_candidates = filter_candidates_by_neighbor_direction(
+    G, label_candidates, lattice.lattice, top_node, bottom_node
+)
+
+for node_id, candidates in label_candidates.items():
+    print(f"  Node {node_id}: {len(candidates)} candidates remaining: {[c.anchor for c in candidates]}")
 
 # ---------------------------------------------------------------------------
 # Plot
