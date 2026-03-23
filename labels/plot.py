@@ -32,51 +32,72 @@ def _draw_candidate(
         candidate: LabelCandidate,
         label_text: str,
         fontsize_pt: float,
-        alpha: float = 0.20,
+        chosen: bool = False,
 ):
     """
     Draw outer bbox and text for a single candidate.
+
+    chosen=True  → solid fill, full opacity, thick border (the hybrid-selected label)
+    chosen=False → dashed outline, low-alpha fill (rejected / unresolved candidate)
+
     Returns the text Artist so the caller can measure its true ink extent
     after a canvas draw and add the inner box.
     """
     bl, br, tr, tl = candidate.bbox_corners
     colour = _ANCHOR_COLOURS[candidate.anchor]
 
-    # Outer bbox — dashed, semi-transparent fill
-    ax.add_patch(mpatches.Polygon(
-        [bl, br, tr, tl], closed=True,
-        facecolor=colour, edgecolor=colour,
-        alpha=alpha, linestyle='--', linewidth=1.0,
-        zorder=3,
-    ))
+    if chosen:
+        # Solid, prominent outer bbox
+        ax.add_patch(mpatches.Polygon(
+            [bl, br, tr, tl], closed=True,
+            facecolor=colour, edgecolor=colour,
+            alpha=0.30, linestyle='-', linewidth=1.6,
+            zorder=3,
+        ))
+        # Expanded bbox — dotted outline, clearly visible for chosen label
+        ebl, ebr, etr, etl = candidate.expanded_bbox_corners
+        ax.add_patch(mpatches.Polygon(
+            [ebl, ebr, etr, etl], closed=True,
+            facecolor='none', edgecolor=colour,
+            alpha=0.55, linestyle=':', linewidth=1.0,
+            zorder=3,
+        ))
+    else:
+        # Dim dashed outline — rejected candidate
+        ax.add_patch(mpatches.Polygon(
+            [bl, br, tr, tl], closed=True,
+            facecolor=colour, edgecolor=colour,
+            alpha=0.08, linestyle='--', linewidth=0.7,
+            zorder=2,
+        ))
+        # Expanded bbox — dotted, very dim
+        ebl, ebr, etr, etl = candidate.expanded_bbox_corners
+        ax.add_patch(mpatches.Polygon(
+            [ebl, ebr, etr, etl], closed=True,
+            facecolor='none', edgecolor=colour,
+            alpha=0.12, linestyle=':', linewidth=0.6,
+            zorder=2,
+        ))
 
-    # Expanded bbox — dotted outline only, no fill
-    ebl, ebr, etr, etl = candidate.expanded_bbox_corners
-    ax.add_patch(mpatches.Polygon(
-        [ebl, ebr, etr, etl], closed=True,
-        facecolor='none', edgecolor=colour,
-        alpha=0.3, linestyle=':', linewidth=0.8,
-        zorder=3,
-    ))
-
-    # Small dot at the anchor corner
+    # Anchor dot — full size for chosen, tiny for rejected
     anchor_pt = {
         'top_left':     tl,
         'top_right':    tr,
         'bottom_left':  bl,
         'bottom_right': br,
     }[candidate.anchor]
-    ax.scatter(*anchor_pt, color=colour, s=20, zorder=6, alpha=0.8)
+    ax.scatter(*anchor_pt, color=colour, s=30 if chosen else 8,
+               zorder=6, alpha=0.9 if chosen else 0.35)
 
-    # Text — return artist so caller can measure it
+    # Text
     cx, cy = candidate.center
     return ax.text(
         cx, cy, label_text,
         ha='center', va='center',
         fontsize=fontsize_pt,
         color=colour,
-        alpha=1.0,
-        zorder=7,
+        alpha=1.0 if chosen else 0.25,
+        zorder=7 if chosen else 4,
     )
 
 
@@ -123,6 +144,7 @@ def plot_lattice(
         # --- label candidates ---
         show_label_candidates: bool = False,
         label_candidates: Dict[int, List[LabelCandidate]] = {},
+        chosen_labels: Dict[int, 'Optional[LabelCandidate]'] = {},
         label_texts: Dict[int, str] = {},
         fontsize_pt: float = 10.0,
 ) -> None:
@@ -148,7 +170,11 @@ def plot_lattice(
     centers               : centroid of each face in `cycles`
     show_label_candidates : if True, draw all candidate label bboxes with text
     label_candidates      : dict mapping node id → list of LabelCandidate
-    label_texts           : dict mapping node id → label string (e.g. '$c_{0}$')
+    chosen_labels         : dict mapping node id → chosen LabelCandidate (or None)
+                            produced by hybrid_label_placement(); when provided,
+                            chosen candidates are drawn solid/opaque and rejected
+                            ones are drawn dim/dashed for comparison
+    label_texts           : dict mapping (node_id, label_type) or node_id → label string
     fontsize_pt           : font size used when rendering label text in candidates
     """
     cmap = cm.YlOrRd
@@ -189,11 +215,18 @@ def plot_lattice(
     text_colour_pairs = []
     if show_label_candidates and label_candidates:
         for node_id, candidates in label_candidates.items():
+            # chosen_labels[node_id] is a list of chosen LabelCandidates
+            # (one per label_type that was successfully placed)
+            chosen_set = set(id(c) for c in chosen_labels.get(node_id, []))
             for candidate in candidates:
+                is_chosen = id(candidate) in chosen_set
                 text = label_texts.get((node_id, candidate.label_type),
                        label_texts.get(node_id, str(node_id)))
-                txt = _draw_candidate(ax, candidate, text, fontsize_pt)
-                text_colour_pairs.append((txt, _ANCHOR_COLOURS[candidate.anchor]))
+                txt = _draw_candidate(ax, candidate, text, fontsize_pt,
+                                      chosen=is_chosen)
+                # only measure ink box for chosen labels
+                if is_chosen:
+                    text_colour_pairs.append((txt, _ANCHOR_COLOURS[candidate.anchor]))
 
         legend_handles = [
             mpatches.Patch(facecolor=colour, edgecolor=colour,

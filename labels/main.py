@@ -11,7 +11,9 @@ from intersection import find_intersections, build_planar_graph
 from topology import betti_1, extract_faces, normalize_positions
 from plot import plot_lattice
 from label import measure_ink_mm
-from placement import compute_label_candidates, filter_candidates_by_edges, restrict_outer_node_candidates, filter_candidates_by_nodes, filter_candidates_by_neighbor_direction
+from placement import (compute_label_candidates, filter_candidates_by_edges,
+                       restrict_outer_node_candidates, filter_candidates_by_nodes,
+                       filter_candidates_by_neighbor_direction, hybrid_label_placement)
 import matplotlib
 
 # ---------------------------------------------------------------------------
@@ -176,6 +178,15 @@ for node_id, candidates in label_candidates.items():
     print(f"  Node {node_id}: {len(candidates)} candidates remaining: {[c.anchor for c in candidates]}")
 
 # ---------------------------------------------------------------------------
+# Resolve remaining ink-box conflicts with the Hybrid algorithm (Wolff §3.2.1)
+# ---------------------------------------------------------------------------
+chosen_labels, hybrid_log = hybrid_label_placement(label_candidates, verbose=True)
+
+n_extent = sum(1 for lst in chosen_labels.values() for c in lst if c.label_type == 'extent')
+n_intent = sum(1 for lst in chosen_labels.values() for c in lst if c.label_type == 'intent')
+print(f"\nHybrid placement: {n_extent} extent + {n_intent} intent labels placed")
+
+# ---------------------------------------------------------------------------
 # Plot
 # ---------------------------------------------------------------------------
 # Transform raw intersection points into normalized coordinates
@@ -199,6 +210,7 @@ plot_lattice(
     centers=centers,
     show_label_candidates=True,
     label_candidates=label_candidates,
+    chosen_labels=chosen_labels,
     label_texts=label_texts,
     fontsize_pt=candidate_fontsize_pt,
 )
