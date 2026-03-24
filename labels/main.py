@@ -19,7 +19,7 @@ import matplotlib
 # ---------------------------------------------------------------------------
 # Load context and coordinates
 # ---------------------------------------------------------------------------
-FILE = 'living_beings_and_water'
+FILE = 'living_beings_and_water_original'
 parser = Parser()
 cxt = parser.decode_cxt(f'../data/{FILE}.cxt')
 print(cxt.print_data())
@@ -67,22 +67,6 @@ def node_label(node_id: int) -> str:
     return rf"$c_{{{node_id}}}$"
 
 
-def extent_label(node_id: int) -> str:
-    """Objects — plain text, printed below each other."""
-    objects = lattice.lattice.get_concept_new_extent(node_id)
-    if not objects:
-        return ""
-    return r"\begin{tabular}{c}" + r" \\ ".join(str(o) for o in sorted(objects)) + r"\end{tabular}"
-
-
-def intent_label(node_id: int) -> str:
-    """Attributes — \\textrm, printed below each other."""
-    attributes = lattice.lattice.get_concept_new_intent(node_id)
-    if not attributes:
-        return ""
-    rows = r" \\ ".join(rf"\textit{{{str(a)}}}" for a in sorted(attributes))
-    return r"\begin{tabular}{c}" + rows + r"\end{tabular}"
-
 
 def latex_upscale_factor(latex_text: str, plain_text: str, fontsize_pt: float) -> float:
     """
@@ -97,6 +81,55 @@ def latex_upscale_factor(latex_text: str, plain_text: str, fontsize_pt: float) -
     if latex_h == 0:
         return 1.0
     return plain_h / latex_h
+
+
+# ---------------------------------------------------------------------------
+# Label variant helpers
+# ---------------------------------------------------------------------------
+
+MAX_ROW_CHARS = 10   # split into 2 balanced rows if full text exceeds this
+
+
+def wrap_label_text(raw_items: list, formatter=str) -> str:
+    """
+    Build a LaTeX string for a label.
+
+    If the full text (all items joined by spaces) is <= MAX_ROW_CHARS,
+    return it as a single formatted string.  Otherwise split into exactly
+    2 rows at the word boundary closest to the midpoint, making both rows
+    as equal in length as possible.  A single word longer than MAX_ROW_CHARS
+    is never broken — it gets one row.
+    """
+    if not raw_items:
+        return ''
+
+    # Join all items into one string (items are separate concepts but we treat
+    # the whole label as a single text block for splitting purposes).
+    full_text = ' '.join(raw_items)
+
+    # No split needed if short enough
+    if len(full_text) <= MAX_ROW_CHARS:
+        return formatter(full_text)
+
+    # Split into at most 2 rows as evenly as possible.
+    # Find the word boundary closest to the midpoint of the full string.
+    words = full_text.split()
+    if len(words) == 1:
+        # Single word longer than limit — can't split, return as-is
+        return formatter(full_text)
+    mid = len(full_text) / 2
+    best_split = 1  # index into words: first row = words[:best_split]
+    best_diff = float('inf')
+    for i in range(1, len(words)):
+        row1 = ' '.join(words[:i])
+        diff = abs(len(row1) - mid)
+        if diff < best_diff:
+            best_diff = diff
+            best_split = i
+
+    row1 = formatter(' '.join(words[:best_split]))
+    row2 = formatter(' '.join(words[best_split:]))
+    return rf'\begin{{tabular}}{{@{{}}c@{{}}}}{row1} \\[-4pt] {row2}\end{{tabular}}'
 
 
 # ---------------------------------------------------------------------------
@@ -117,12 +150,15 @@ print(f"LaTeX upscale factor: {_scale:.3f} → candidate fontsize: {candidate_fo
 label_candidates = {}        # node_id → list of LabelCandidate
 label_texts      = {}        # (node_id, label_type) → text string
 
-for node_id in lattice.nodes:
-    ext_text = extent_label(node_id)
-    int_text = intent_label(node_id)
+intent_fmt = lambda x: rf'\textit{{{x}}}'
 
+for node_id in lattice.nodes:
     per_node = []
-    if ext_text:
+
+    # ── Extent (objects) ──────────────────────────────────────────────────
+    objects = lattice.lattice.get_concept_new_extent(node_id)
+    if objects:
+        ext_text = wrap_label_text(sorted(str(o) for o in objects), formatter=str)
         label_texts[(node_id, 'extent')] = ext_text
         per_node += compute_label_candidates(
             G, concepts=[node_id], label_text=ext_text,
@@ -131,7 +167,11 @@ for node_id in lattice.nodes:
             padding_x_mm=3.0, padding_y_mm=2.0,
             fontsize_pt=candidate_fontsize_pt,
         )[node_id]
-    if int_text:
+
+    # ── Intent (attributes) ───────────────────────────────────────────────
+    attributes = lattice.lattice.get_concept_new_intent(node_id)
+    if attributes:
+        int_text = wrap_label_text(sorted(str(a) for a in attributes), formatter=intent_fmt)
         label_texts[(node_id, 'intent')] = int_text
         per_node += compute_label_candidates(
             G, concepts=[node_id], label_text=int_text,
