@@ -5,7 +5,7 @@ Visualises a concept-lattice drawing with optional face colouring,
 intersection markers, concept annotations, and label placement candidates.
 """
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import matplotlib.cm as cm
 import matplotlib.patches as mpatches
@@ -13,10 +13,9 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 from fcapy.context import FormalContext
-from fcapy.lattice import ConceptLattice
 
 from fca.lattice import Lattice
-from placement import LabelCandidate
+from placement import LabelCandidate, OverflowLabel
 
 # One distinct colour per anchor position
 _ANCHOR_COLOURS = {
@@ -123,6 +122,187 @@ def _add_inner_boxes(ax, fig, text_colour_pairs: list) -> None:
         ))
 
 
+_NODE_RADIUS_PT = np.sqrt(150) / 2   # matches s=150 scatter → radius in points
+
+
+def _draw_leader_line(
+        ax,
+        node_pos:       Tuple[float, float],
+        label_center:   Tuple[float, float],
+        half_w:         float,
+        half_h:         float,
+        colour:         str,
+        all_node_pos:   List[Tuple[float, float]],
+        node_radius:    float,
+        gap_data:       float = 0.15,
+) -> None:
+    """
+    Draw a thin leader line from *node_pos* to the nearest edge of the label
+    ink box, leaving a small gap at both ends.
+
+    Obstruction avoidance
+    ---------------------
+    The route starts as a straight line from the node surface to the label
+    box edge.  We then iteratively check every segment of the current route
+    against all non-source node circles.  Whenever a segment would pass
+    within (node_radius + gap_data) of a blocking node, a waypoint is
+    inserted perpendicular to the segment at the blocker's closest point,
+    on the side that gives the shorter detour.  This repeats until no
+    segment crosses any node, or a safety iteration limit is reached.
+    """
+    import math
+
+    def _seg_closest_t(ax_, ay_, bx_, by_, px_, py_) -> float:
+        """Parameter t in [0,1] of the closest point on AB to P."""
+        abx, aby = bx_ - ax_, by_ - ay_
+        len2 = abx * abx + aby * aby
+        if len2 < 1e-12:
+            return 0.0
+        return max(0.0, min(1.0, ((px_ - ax_) * abx + (py_ - ay_) * aby) / len2))
+
+    def _seg_dist(ax_, ay_, bx_, by_, px_, py_) -> float:
+        t = _seg_closest_t(ax_, ay_, bx_, by_, px_, py_)
+        return math.hypot(px_ - (ax_ + t*(bx_-ax_)), py_ - (ay_ + t*(by_-ay_)))
+
+    def _find_blocker(pts):
+        """Return (segment_idx, blocker_pos) for the worst obstruction, or None."""
+        worst_d   = math.inf
+        worst_seg = None
+        worst_blk = None
+        for si in range(len(pts) - 1):
+            ax_, ay_ = pts[si]
+            bx_, by_ = pts[si + 1]
+            for np_ in all_node_pos:
+                # skip the source node
+                if math.hypot(np_[0] - node_pos[0], np_[1] - node_pos[1]) < 1e-6:
+                    continue
+                d = _seg_dist(ax_, ay_, bx_, by_, np_[0], np_[1])
+                if d < node_radius + gap_data and d < worst_d:
+                    worst_d   = d
+                    worst_seg = si
+                    worst_blk = np_
+        return (worst_seg, worst_blk) if worst_seg is not None else None
+
+    def _insert_waypoint(pts, seg_idx, blocker):
+        """Insert a waypoint that steers around *blocker* on segment *seg_idx*."""
+        bx, by = blocker
+        ax_, ay_ = pts[seg_idx]
+        ex_, ey_ = pts[seg_idx + 1]
+
+        # Closest point on the segment to the blocker
+        t = _seg_closest_t(ax_, ay_, ex_, ey_, bx, by)
+        cx_ = ax_ + t * (ex_ - ax_)
+        cy_ = ay_ + t * (ey_ - ay_)
+
+        # Perpendicular from segment to blocker
+        perp_x = bx - cx_
+        perp_y = by - cy_
+        plen = math.hypot(perp_x, perp_y)
+        if plen < 1e-9:
+            # Blocker sits exactly on the segment — pick an arbitrary perp
+            dx_, dy_ = ex_ - ax_, ey_ - ay_
+            dlen = math.hypot(dx_, dy_) or 1.0
+            perp_x, perp_y = -dy_ / dlen, dx_ / dlen
+        else:
+            perp_x /= plen
+            perp_y /= plen
+
+        offset = node_radius + gap_data * 2
+        # Two candidate waypoints: away from blocker and toward blocker side
+        wp_away   = (cx_ - perp_x * offset, cy_ - perp_y * offset)
+        wp_toward = (cx_ + perp_x * offset, cy_ + perp_y * offset)
+
+        # Choose the one farther from the blocker (i.e. the "away" side is
+        # already further; pick it unless it introduces a longer detour)
+        def _detour_len(wp):
+            return (math.hypot(wp[0]-ax_, wp[1]-ay_) +
+                    math.hypot(ex_-wp[0], ey_-wp[1]))
+
+        wp = wp_away if _detour_len(wp_away) <= _detour_len(wp_toward) else wp_toward
+
+        return pts[:seg_idx + 1] + [wp] + pts[seg_idx + 1:]
+
+    nx_, ny = node_pos
+    lx, ly  = label_center
+
+    dx, dy = lx - nx_, ly - ny
+    dist = math.hypot(dx, dy)
+    if dist < 1e-9:
+        return
+    ux, uy = dx / dist, dy / dist
+
+    # Start: node surface + gap
+    x0 = nx_ + ux * (node_radius + gap_data)
+    y0 = ny  + uy * (node_radius + gap_data)
+
+    # End: nearest bbox face − gap
+    def _bbox_t(hw, hh, vx, vy):
+        ts = []
+        if abs(vx) > 1e-9: ts.append(hw / abs(vx))
+        if abs(vy) > 1e-9: ts.append(hh / abs(vy))
+        return min(ts) if ts else 0.0
+
+    t_edge = _bbox_t(half_w, half_h, ux, uy)
+    x1 = lx - ux * (t_edge + gap_data)
+    y1 = ly - uy * (t_edge + gap_data)
+
+    pts = [(x0, y0), (x1, y1)]
+
+    for _ in range(20):   # safety limit
+        hit = _find_blocker(pts)
+        if hit is None:
+            break
+        seg_idx, blocker = hit
+        pts = _insert_waypoint(pts, seg_idx, blocker)
+
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    ax.plot(xs, ys, color=colour, linewidth=0.8, linestyle='-',
+            alpha=0.6, zorder=3)
+
+
+def _draw_overflow_label(
+        ax,
+        overflow: OverflowLabel,
+        label_text: str,
+        fontsize_pt: float,
+        colour: str,
+        all_node_pos: List[Tuple[float, float]],
+        node_radius: float,
+) -> None:
+    """Draw the ink box, text, and leader line for one overflow label."""
+    cx, cy = overflow.center
+    hw, hh = overflow.half_w, overflow.half_h
+
+    # Ink box outline
+    ax.add_patch(mpatches.FancyBboxPatch(
+        (cx - hw, cy - hh), 2 * hw, 2 * hh,
+        boxstyle='square,pad=0',
+        facecolor='none', edgecolor=colour,
+        alpha=0.7, linestyle='-', linewidth=0.9,
+        zorder=5,
+    ))
+
+    # Text
+    ax.text(cx, cy, label_text,
+            ha='center', va='center',
+            fontsize=fontsize_pt, color=colour,
+            alpha=0.9, zorder=6)
+
+    # Leader line
+    _draw_leader_line(
+        ax,
+        node_pos=overflow.node_pos,
+        label_center=overflow.center,
+        half_w=hw,
+        half_h=hh,
+        colour=colour,
+        all_node_pos=all_node_pos,
+        node_radius=node_radius,
+    )
+
+
+
 def plot_lattice(
         G: nx.Graph,
         context: FormalContext,
@@ -147,6 +327,8 @@ def plot_lattice(
         chosen_labels: Dict[int, 'Optional[LabelCandidate]'] = {},
         label_texts: Dict[int, str] = {},
         fontsize_pt: float = 10.0,
+        # --- overflow labels ---
+        overflow_labels: List[OverflowLabel] = [],
 ) -> None:
     """
     Draw the lattice diagram and save to a PDF.
@@ -235,6 +417,32 @@ def plot_lattice(
         ]
         ax.legend(handles=legend_handles, loc='upper left',
                   fontsize=8, title='Label anchor', framealpha=0.8)
+
+    # ── Overflow labels (outside diagram) ────────────────────────────────
+    if overflow_labels:
+        # Collect all concept node positions and estimate node radius in data units.
+        # s=150 in scatter → marker area 150 pt² → radius ≈ sqrt(150/pi) / 2 pt.
+        # Convert pt → data units via the axes transform.
+        all_node_pos = [pos(c) for c in concepts]
+        # Approximate: measure one unit in data space vs display space
+        try:
+            _trans = ax.transData
+            _p0 = _trans.transform((0, 0))
+            _p1 = _trans.transform((1, 0))
+            _pts_per_unit = abs(_p1[0] - _p0[0])   # display pts per data unit
+            import math as _math
+            _radius_pt = _math.sqrt(150 / _math.pi) / 2
+            _node_radius = _radius_pt / _pts_per_unit if _pts_per_unit > 0 else 0.1
+        except Exception:
+            _node_radius = 0.1
+
+        for ov in overflow_labels:
+            text = label_texts.get((ov.node_id, ov.label_type),
+                                   label_texts.get(ov.node_id, str(ov.node_id)))
+            colour = '#555555'
+            _draw_overflow_label(ax, ov, text, fontsize_pt, colour,
+                                 all_node_pos=all_node_pos,
+                                 node_radius=_node_radius)
 
     # ── Concept vertices ──────────────────────────────────────────────────
     for concept in concepts:

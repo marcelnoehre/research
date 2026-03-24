@@ -13,7 +13,8 @@ from plot import plot_lattice
 from label import measure_ink_mm
 from placement import (compute_label_candidates, filter_candidates_by_edges,
                        restrict_outer_node_candidates, filter_candidates_by_nodes,
-                       filter_candidates_by_neighbor_direction, hybrid_label_placement)
+                       filter_candidates_by_neighbor_direction, hybrid_label_placement,
+                       place_overflow_labels)
 import matplotlib
 
 # ---------------------------------------------------------------------------
@@ -227,6 +228,21 @@ n_intent = sum(1 for lst in chosen_labels.values() for c in lst if c.label_type 
 print(f"\nHybrid placement: {n_extent} extent + {n_intent} intent labels placed")
 
 # ---------------------------------------------------------------------------
+# Overflow labels — place unresolved labels outside the diagram
+# ---------------------------------------------------------------------------
+overflow_labels = place_overflow_labels(
+    G,
+    label_candidates=label_candidates,
+    chosen_labels=chosen_labels,
+    label_texts=label_texts,
+    physical_height_mm=PHYSICAL_HEIGHT_MM,
+    fontsize_pt=candidate_fontsize_pt,
+    padding_x_mm=3.0,
+    padding_y_mm=2.0,
+)
+print(f"Overflow labels: {len(overflow_labels)}")
+
+# ---------------------------------------------------------------------------
 # Plot
 # ---------------------------------------------------------------------------
 # Transform raw intersection points into normalized coordinates
@@ -253,4 +269,5 @@ plot_lattice(
     chosen_labels=chosen_labels,
     label_texts=label_texts,
     fontsize_pt=candidate_fontsize_pt,
+    overflow_labels=overflow_labels,
 )

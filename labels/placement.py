@@ -873,3 +873,197 @@ def hybrid_label_placement(
             print(line)
 
     return chosen_map, log
+
+# ---------------------------------------------------------------------------
+# Overflow label placement — labels that were not placed inside the diagram
+# ---------------------------------------------------------------------------
+
+@dataclass
+class OverflowLabel:
+    """
+    A label that could not be placed inside the diagram and is instead
+    positioned outside the bounding box of all nodes.
+
+    Attributes
+    ----------
+    node_id    : concept node this label belongs to
+    label_type : 'extent' or 'intent'
+    center     : (x, y) center of the label box in graph units
+    half_w     : half-width  of the ink box in graph units
+    half_h     : half-height of the ink box in graph units
+    node_pos   : (x, y) of the corresponding concept node
+    """
+    node_id:    int
+    label_type: str
+    center:     Tuple[float, float]
+    half_w:     float
+    half_h:     float
+    node_pos:   Tuple[float, float]
+
+
+def place_overflow_labels(
+        G: nx.Graph,
+        label_candidates: Dict[int, List[LabelCandidate]],
+        chosen_labels:    Dict[int, List[LabelCandidate]],
+        label_texts:      Dict,
+        physical_height_mm: float,
+        fontsize_pt:      float,
+        padding_x_mm:     float = 3.0,
+        padding_y_mm:     float = 2.0,
+        margin_units:     float = 0.2,
+) -> List['OverflowLabel']:
+    """
+    Place unresolved labels outside the diagram at diagonal positions,
+    evenly spaced from already-committed labels.
+
+    Strategy
+    --------
+    Each overflow label is placed on a ring outside the diagram's bounding
+    box at the angle that maximises its angular distance to all other placed
+    labels (both chosen inner labels and previously placed overflow labels).
+    Labels are placed one at a time; each new label picks the angle that is
+    as far as possible from all already-occupied angles.
+
+    The ring radius is set so the label box clears the diagram bounding box
+    by margin_units on every side.
+
+    Parameters
+    ----------
+    G                  : graph with normalised 'pos' attributes on concept nodes
+    label_candidates   : full candidate dict (node_id → list) — used only for
+                         the fallback preferred-x mirror logic
+    chosen_labels      : output of hybrid_label_placement (node_id → list)
+    label_texts        : (node_id, label_type) → latex string (ground truth)
+    physical_height_mm : drawing height in mm (for unit conversion)
+    fontsize_pt        : font size used for measurement
+    padding_x_mm / padding_y_mm : padding around ink box
+    margin_units       : clearance between diagram bbox edge and label box edge
+
+    Returns
+    -------
+    list of OverflowLabel, one per unplaced (node_id, label_type)
+    """
+    import math
+
+    mm_per_unit  = physical_height_mm / G.graph['normalized_height']
+    units_per_mm = 1.0 / mm_per_unit
+
+    concept_nodes = [n for n in G.nodes if isinstance(n, int)]
+    xs = [G.nodes[n]['pos'][0] for n in concept_nodes]
+    ys = [G.nodes[n]['pos'][1] for n in concept_nodes]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    cx_diag = (min_x + max_x) / 2
+    cy_diag = (min_y + max_y) / 2
+
+    # Collect unplaced pairs from label_texts (ground truth)
+    chosen_types: Dict[int, set] = {}
+    for nid, clist in chosen_labels.items():
+        chosen_types[nid] = {c.label_type for c in clist}
+
+    unplaced: List[Tuple[int, str]] = []
+    for (nid, lt), text in label_texts.items():
+        if text and lt not in chosen_types.get(nid, set()):
+            unplaced.append((nid, lt))
+
+    if not unplaced:
+        return []
+
+    # Measure all unplaced labels
+    measured = []   # (nid, lt, half_w, half_h, node_pos, preferred_angle)
+    for nid, lt in unplaced:
+        text = label_texts[(nid, lt)]
+        ink_w_mm, ink_h_mm = measure_ink_mm(text, fontsize_pt)
+        half_w = (ink_w_mm / 2 + padding_x_mm) * units_per_mm
+        half_h = (ink_h_mm / 2 + padding_y_mm) * units_per_mm
+        node_pos = G.nodes[nid]['pos']
+        # preferred angle: direction from diagram center toward the node
+        pref_angle = math.atan2(node_pos[1] - cy_diag, node_pos[0] - cx_diag)
+        measured.append((nid, lt, half_w, half_h, node_pos, pref_angle))
+
+    # Build initial set of occupied angles from chosen inner labels
+    # (use their center relative to diagram center)
+    occupied_angles: List[float] = []
+    for clist in chosen_labels.values():
+        for c in clist:
+            a = math.atan2(c.center[1] - cy_diag, c.center[0] - cx_diag)
+            occupied_angles.append(a)
+
+    def _label_center_on_ring(angle: float, hw: float, hh: float) -> Tuple[float, float]:
+        """
+        Place label center outside the bounding box at *angle* from the diagram
+        center, far enough that the label box clears the bbox by margin_units.
+        """
+        # Distance from diagram center to the bbox edge in direction *angle*
+        cos_a, sin_a = math.cos(angle), math.sin(angle)
+        # Parametric: how far along (cos_a, sin_a) until we exit the bbox
+        half_bw = (max_x - min_x) / 2 + margin_units
+        half_bh = (max_y - min_y) / 2 + margin_units
+        t_candidates = []
+        if abs(cos_a) > 1e-9:
+            t_candidates.append(half_bw / abs(cos_a))
+        if abs(sin_a) > 1e-9:
+            t_candidates.append(half_bh / abs(sin_a))
+        t_bbox = min(t_candidates)
+        # Add the label's own half-extent in the direction of travel
+        t_label = t_bbox + abs(cos_a) * hw + abs(sin_a) * hh
+        return (cx_diag + cos_a * t_label, cy_diag + sin_a * t_label)
+
+    # Sort unplaced labels by their preferred angle so nodes that are spatially
+    # close get adjacent slots.
+    measured.sort(key=lambda m: m[5])
+
+    # ── Assign angles: place each label at the midpoint of the largest
+    #    remaining gap in the occupied-angle circle. ───────────────────────
+    import math
+
+    def _gaps(occupied: List[float]) -> List[Tuple[float, float, float]]:
+        """
+        Return list of (gap_size, gap_start, gap_midpoint) sorted by gap_size
+        descending.  Angles are on [-pi, pi]; the circle is closed.
+        """
+        if not occupied:
+            return [(2 * math.pi, -math.pi, 0.0)]
+        s = sorted(occupied)
+        gaps = []
+        n = len(s)
+        for i in range(n):
+            a0 = s[i]
+            a1 = s[(i + 1) % n]
+            if i == n - 1:
+                a1 += 2 * math.pi   # wrap-around gap
+            size = a1 - a0
+            mid  = a0 + size / 2
+            # normalise mid to [-pi, pi]
+            mid = math.atan2(math.sin(mid), math.cos(mid))
+            gaps.append((size, a0, mid))
+        gaps.sort(reverse=True)
+        return gaps
+
+    result: List[OverflowLabel] = []
+
+    for nid, lt, half_w, half_h, node_pos, pref_angle in measured:
+        gaps = _gaps(occupied_angles)
+        # Pick the gap whose midpoint is closest to the preferred angle,
+        # among the top-3 largest gaps (so we stay roughly near the node
+        # but still spread labels out).
+        top_gaps = gaps[:max(3, len(gaps))]
+        best_angle = min(
+            (mid for _, _, mid in top_gaps),
+            key=lambda a: abs(math.atan2(math.sin(a - pref_angle),
+                                         math.cos(a - pref_angle)))
+        )
+
+        center = _label_center_on_ring(best_angle, half_w, half_h)
+        occupied_angles.append(best_angle)
+
+        result.append(OverflowLabel(
+            node_id=nid,
+            label_type=lt,
+            center=center,
+            half_w=half_w,
+            half_h=half_h,
+            node_pos=node_pos,
+        ))
+
+    return result
