@@ -989,80 +989,147 @@ def place_overflow_labels(
             a = math.atan2(c.center[1] - cy_diag, c.center[0] - cx_diag)
             occupied_angles.append(a)
 
-    def _label_center_on_ring(angle: float, hw: float, hh: float) -> Tuple[float, float]:
+    # Build a dict: angle → chosen label center, so we can look up the radius
+    # of each gap boundary.
+    chosen_angle_to_center: Dict[float, Tuple[float, float]] = {}
+    for clist in chosen_labels.values():
+        for c in clist:
+            a = math.atan2(c.center[1] - cy_diag, c.center[0] - cx_diag)
+            chosen_angle_to_center[a] = c.center
+
+    def _label_center_from_neighbours(
+            angle: float,
+            hw: float,
+            hh: float,
+            a_left: float,
+            a_right: float,
+    ) -> Tuple[float, float]:
         """
-        Place label center outside the bounding box at *angle* from the diagram
-        center, far enough that the label box clears the bbox by margin_units.
+        Place the label center at *angle* by interpolating the radius from the
+        two neighbouring chosen labels at *a_left* and *a_right*.
+
+        The radius is the distance from the diagram center to the chosen label's
+        center.  We linearly interpolate based on how far *angle* sits between
+        *a_left* and *a_right* within the gap.  No margin is added — the label
+        simply sits at the same distance ring as its neighbours.
+
+        The label center is then shifted outward by its own half-extent in the
+        direction of travel so the label box edge (not center) aligns with that ring.
         """
-        # Distance from diagram center to the bbox edge in direction *angle*
         cos_a, sin_a = math.cos(angle), math.sin(angle)
-        # Parametric: how far along (cos_a, sin_a) until we exit the bbox
-        half_bw = (max_x - min_x) / 2 + margin_units
-        half_bh = (max_y - min_y) / 2 + margin_units
-        t_candidates = []
-        if abs(cos_a) > 1e-9:
-            t_candidates.append(half_bw / abs(cos_a))
-        if abs(sin_a) > 1e-9:
-            t_candidates.append(half_bh / abs(sin_a))
-        t_bbox = min(t_candidates)
-        # Add the label's own half-extent in the direction of travel
-        t_label = t_bbox + abs(cos_a) * hw + abs(sin_a) * hh
-        return (cx_diag + cos_a * t_label, cy_diag + sin_a * t_label)
+
+        # Radii of the two bounding chosen labels
+        def _r(a):
+            center = chosen_angle_to_center.get(a)
+            if center is None:
+                return 1.0
+            return math.hypot(center[0] - cx_diag, center[1] - cy_diag)
+
+        r_left  = _r(a_left)
+        r_right = _r(a_right)
+
+        # Interpolation parameter: how far angle sits in [a_left, a_right]
+        # Normalise angle into [a_left, a_left + 2pi) for the wrap-around case
+        a_norm  = _normalise_into(angle,  a_left)
+        a_right_norm = _normalise_into(a_right, a_left)
+        t = (a_norm - a_left) / (a_right_norm - a_left) if a_right_norm != a_left else 0.5
+        t = max(0.0, min(1.0, t))
+        r = r_left + t * (r_right - r_left)
+
+        # Base position on the interpolated ring
+        bx = cx_diag + cos_a * r
+        by = cy_diag + sin_a * r
+
+        return (bx, by)
 
     # Sort unplaced labels by their preferred angle so nodes that are spatially
     # close get adjacent slots.
     measured.sort(key=lambda m: m[5])
 
-    # ── Assign angles: place each label at the midpoint of the largest
-    #    remaining gap in the occupied-angle circle. ───────────────────────
-    import math
-
-    def _gaps(occupied: List[float]) -> List[Tuple[float, float, float]]:
-        """
-        Return list of (gap_size, gap_start, gap_midpoint) sorted by gap_size
-        descending.  Angles are on [-pi, pi]; the circle is closed.
-        """
-        if not occupied:
-            return [(2 * math.pi, -math.pi, 0.0)]
-        s = sorted(occupied)
-        gaps = []
-        n = len(s)
-        for i in range(n):
-            a0 = s[i]
-            a1 = s[(i + 1) % n]
-            if i == n - 1:
-                a1 += 2 * math.pi   # wrap-around gap
-            size = a1 - a0
-            mid  = a0 + size / 2
-            # normalise mid to [-pi, pi]
-            mid = math.atan2(math.sin(mid), math.cos(mid))
-            gaps.append((size, a0, mid))
-        gaps.sort(reverse=True)
-        return gaps
-
+    # ── Assign angles ────────────────────────────────────────────────────
     result: List[OverflowLabel] = []
 
-    for nid, lt, half_w, half_h, node_pos, pref_angle in measured:
-        gaps = _gaps(occupied_angles)
-        # Pick the gap whose midpoint is closest to the preferred angle,
-        # among the top-3 largest gaps (so we stay roughly near the node
-        # but still spread labels out).
-        top_gaps = gaps[:max(3, len(gaps))]
-        best_angle = min(
-            (mid for _, _, mid in top_gaps),
-            key=lambda a: abs(math.atan2(math.sin(a - pref_angle),
-                                         math.cos(a - pref_angle)))
+    if not occupied_angles:
+        # No chosen labels — space evenly around the ring, use outermost node radius
+        concept_positions = [G.nodes[n]['pos'] for n in concept_nodes]
+        n_total = len(measured)
+        for idx, (nid, lt, half_w, half_h, node_pos, pref_angle) in enumerate(measured):
+            angle = -math.pi + 2 * math.pi * idx / n_total
+            cos_a, sin_a = math.cos(angle), math.sin(angle)
+            projs = [(p[0]-cx_diag)*cos_a + (p[1]-cy_diag)*sin_a for p in concept_positions]
+            r = max(projs) + abs(cos_a)*half_w + abs(sin_a)*half_h
+            center = (cx_diag + cos_a * r, cy_diag + sin_a * r)
+            result.append(OverflowLabel(
+                node_id=nid, label_type=lt,
+                center=center, half_w=half_w, half_h=half_h,
+                node_pos=node_pos,
+            ))
+        return result
+
+    # Sort chosen angles and build gaps: list of (a_start, a_end)
+    sorted_chosen = sorted(occupied_angles)
+    n_ch = len(sorted_chosen)
+    gaps: List[Tuple[float, float]] = []
+    for i in range(n_ch):
+        a0 = sorted_chosen[i]
+        a1 = sorted_chosen[(i + 1) % n_ch]
+        if i == n_ch - 1:
+            a1 += 2 * math.pi
+        gaps.append((a0, a1))
+
+    def _normalise_into(a: float, base: float) -> float:
+        while a < base:
+            a += 2 * math.pi
+        while a >= base + 2 * math.pi:
+            a -= 2 * math.pi
+        return a
+
+    # Assign each overflow label to the gap whose midpoint is angularly closest
+    gap_buckets: Dict[int, List[Tuple[int, float]]] = {gi: [] for gi in range(len(gaps))}
+    for idx, (nid, lt, half_w, half_h, node_pos, pref_angle) in enumerate(measured):
+        best_gi, best_dist = 0, math.inf
+        for gi, (g0, g1) in enumerate(gaps):
+            mid = math.atan2(math.sin((g0+g1)/2), math.cos((g0+g1)/2))
+            dist = abs(math.atan2(math.sin(pref_angle - mid),
+                                   math.cos(pref_angle - mid)))
+            if dist < best_dist:
+                best_dist = dist
+                best_gi = gi
+        norm_pref = _normalise_into(pref_angle, gaps[best_gi][0])
+        gap_buckets[best_gi].append((idx, norm_pref))
+
+    # Place labels within each gap at evenly-spaced angles, no margin
+    assigned_angles: Dict[int, float] = {}
+    for gi, (g0, g1) in enumerate(gaps):
+        bucket = gap_buckets[gi]
+        if not bucket:
+            continue
+        bucket.sort(key=lambda x: x[1])
+        n = len(bucket)
+        if n == 1:
+            positions = [(g0 + g1) / 2]
+        else:
+            # Evenly spaced including endpoints slightly inset to avoid chosen neighbours
+            step = (g1 - g0) / (n + 1)
+            positions = [g0 + step * (k + 1) for k in range(n)]
+        for (idx, _), angle in zip(bucket, positions):
+            assigned_angles[idx] = math.atan2(math.sin(angle), math.cos(angle))
+
+    # Build result
+    for idx, (nid, lt, half_w, half_h, node_pos, pref_angle) in enumerate(measured):
+        angle = assigned_angles.get(idx, pref_angle)
+        # Find this label's gap boundaries for radius interpolation
+        gi_used = next(
+            (gi for gi, bucket in gap_buckets.items() if any(i == idx for i, _ in bucket)),
+            0,
         )
-
-        center = _label_center_on_ring(best_angle, half_w, half_h)
-        occupied_angles.append(best_angle)
-
+        g0, g1 = gaps[gi_used]
+        a_left  = sorted_chosen[gi_used]
+        a_right = sorted_chosen[(gi_used + 1) % n_ch]
+        center = _label_center_from_neighbours(angle, half_w, half_h, a_left, a_right)
         result.append(OverflowLabel(
-            node_id=nid,
-            label_type=lt,
-            center=center,
-            half_w=half_w,
-            half_h=half_h,
+            node_id=nid, label_type=lt,
+            center=center, half_w=half_w, half_h=half_h,
             node_pos=node_pos,
         ))
 
