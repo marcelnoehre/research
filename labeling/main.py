@@ -1,12 +1,11 @@
-import networkx as nx
-
 from data.parser import Parser
 from fca.lattice import Lattice
 
-from intersection import find_intersections, build_planar_graph
-from utils import normalize_positions, normalize_intersections
-from topology import betti_1, extract_faces
-from plotting import plot_lattice
+from intersection import *
+from utils import *
+from topology import *
+from label import *
+from plotting import *
 
 ################################################################################ 
 # Data
@@ -68,4 +67,54 @@ plot_lattice(
     areas=areas,
     centers=centers,
     show_face_areas=True
+)
+
+################################################################################
+# Label Candidates
+################################################################################
+label_config = {
+    'general': True,
+    'extent':  False,
+    'intent':  False
+}
+label_candidates = {}
+label_texts = {}
+
+for node_id in lattice.nodes:
+    per_node = []
+
+    if label_config['general']:
+        general_txt = wrap_label_text(f'Concept {node_id}', formatter=str)
+        label_texts[(node_id, 'general')] = general_txt
+        per_node += compute_label_candidates(G, concepts=[node_id], label_text=general_txt, label_type='extent', padding_x_mm=3.0, padding_y_mm=2.0)[node_id]
+    
+    if label_config['extent']:
+        objects = sorted(str(g) for g in lattice.lattice.get_concept_new_extent(node_id))
+        extent_txt = wrap_label_text(', '.join(objects), formatter=str)
+        label_texts[(node_id, 'extent')] = extent_txt
+    
+    if label_config['intent']:
+        attributes = sorted(str(m) for m in lattice.lattice.get_concept_new_intent(node_id))
+        intent_txt = wrap_label_text(', '.join(attributes), formatter=str)
+        label_texts[(node_id, 'intent')] = intent_txt
+
+    for label_type, is_active in label_config.items():
+        if not is_active:
+            continue
+        
+        per_node += compute_label_candidates(G, [node_id], label_texts[(node_id, label_type)], label_type)[node_id]
+
+    label_candidates[node_id] = per_node
+
+plot_lattice(
+    G, cxt, lattice.nodes, coords,
+    output_path="general_label_candidates.pdf",
+    intersections=intersection_points,
+    cycles=bounded_faces,
+    areas=areas,
+    centers=centers,
+    label_candidates=label_candidates,
+    label_texts=label_texts,
+    show_label_candidates=True,
+    colored_label_candidates=True
 )

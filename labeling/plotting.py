@@ -1,3 +1,4 @@
+import matplotlib
 import matplotlib.cm as cm
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
@@ -7,8 +8,68 @@ from typing import Dict, List, Optional, Tuple
 from fcapy.context import FormalContext
 
 from fca.lattice import Lattice
+from label import LabelCandidate
 
+_ANCHOR_COLOURS = {
+    'top_left':     '#d62728',   # tab:red
+    'top_right':    '#1f77b4',   # tab:blue
+    'bottom_left':  '#2ca02c',   # tab:green
+    'bottom_right': '#ff7f0e',   # tab:orange
+    'top':          '#9467bd',   # tab:purple
+    'bottom':       '#8c564b',   # tab:brown
+    'left':         '#e377c2',   # tab:pink
+    'right':        '#7f7f7f',   # tab:gray
+}
 
+def _draw_candidate(
+        ax,
+        candidate: LabelCandidate,
+        label_text: str,
+        fontsize_pt: float,
+        colored_label_candidates: bool = False
+):
+    bl, br, tr, tl = candidate.bbox_corners
+    colour = _ANCHOR_COLOURS[candidate.anchor]
+
+    if colored_label_candidates:
+        ax.add_patch(mpatches.Polygon(
+            [bl, br, tr, tl], closed=True,
+            facecolor=colour, edgecolor=colour,
+            alpha=0.30, linestyle='-', linewidth=1.6,
+            zorder=3,
+        ))
+        # Expanded bbox — dotted outline, clearly visible for chosen label
+        ebl, ebr, etr, etl = candidate.expanded_bbox_corners
+        ax.add_patch(mpatches.Polygon(
+            [ebl, ebr, etr, etl], closed=True,
+            facecolor='none', edgecolor=colour,
+            alpha=0.55, linestyle=':', linewidth=1.0,
+            zorder=3,
+        ))
+
+        # Anchor dot — full size for chosen, tiny for rejected
+        anchor_pt = {
+            'top':          ((tl[0] + tr[0]) / 2, tl[1]),
+            'bottom':       ((bl[0] + br[0]) / 2, bl[1]),
+            'left':         (tl[0], (tl[1] + bl[1]) / 2),
+            'right':        (tr[0], (tr[1] + br[1]) / 2),
+            'top_left':     tl,
+            'top_right':    tr,
+            'bottom_left':  bl,
+            'bottom_right': br,
+        }[candidate.anchor]
+        ax.scatter(*anchor_pt, color=colour, s=30, zorder=6, alpha=0.9)
+
+    text_color = colour if colored_label_candidates else 'black'
+    cx, cy = candidate.center
+    return ax.text(
+        cx, cy, label_text,
+        ha='center', va='center',
+        fontsize=fontsize_pt,
+        color=text_color,
+        alpha=1.0,
+        zorder=7,
+    )
 
 def plot_lattice(
         G: nx.Graph,
@@ -26,7 +87,12 @@ def plot_lattice(
         areas: List[float] = [],
         centers: List[Tuple] = [],
         show_face_areas: bool = False,
-        show_face_sizes: bool = False
+        show_face_sizes: bool = False,
+        label_candidates: Dict = {},
+        label_texts: Dict = {},
+        fontsize_pt: float = matplotlib.rcParams.get('font.size', 10.0),
+        show_label_candidates: bool = False,
+        colored_label_candidates: bool = False
 ) -> None:
     '''
     Draw the lattice diagram and save to a PDF.
@@ -95,6 +161,26 @@ def plot_lattice(
         sm = cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(min(areas), max(areas)))
         sm.set_array([])
         plt.colorbar(sm, ax=ax, label=r'Face area ($\mathrm{mm}^2$)')
+
+    ##### label candidates #####
+    if show_label_candidates and label_candidates and label_texts:
+        text_colour_pairs = []
+        for node_id, candidates in label_candidates.items():
+            for candidate in candidates:
+                text = label_texts.get((node_id, candidate.label_type), label_texts.get(node_id, str(node_id)))
+                txt = _draw_candidate(ax, candidate, text, fontsize_pt, colored_label_candidates)
+                # only measure ink box for chosen labels
+                text_colour_pairs.append((txt, _ANCHOR_COLOURS[candidate.anchor]))
+
+        legend_handles = [
+            mpatches.Patch(facecolor=colour, edgecolor=colour,
+                           alpha=0.6, label=anchor.replace('_', ' '))
+            for anchor, colour in _ANCHOR_COLOURS.items()
+        ]
+        ax.legend(handles=legend_handles, loc='upper left',
+                  fontsize=8, title='Label anchor', framealpha=0.8)
+
+
 
     ax.set_aspect('equal')
     ax.axis('off')
