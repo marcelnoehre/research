@@ -5,6 +5,7 @@ from fca.lattice import Lattice
 
 from intersection import find_intersections, build_planar_graph
 from utils import normalize_positions, normalize_intersections
+from topology import betti_1, extract_faces
 from plotting import plot_lattice
 
 ################################################################################ 
@@ -13,7 +14,6 @@ from plotting import plot_lattice
 FILE = 'living_beings_and_water_original'
 parser = Parser()
 cxt = parser.decode_cxt(f'../data/{FILE}.cxt')
-print('Formal Context')
 print(cxt.print_data())
 
 with open(f'../data/{FILE}.pos', 'r') as f:
@@ -38,17 +38,34 @@ G = build_planar_graph(edges_list, coords, intersections)
 ################################################################################
 # Normalize coordinates and set physical scale
 ################################################################################
-normalize_positions(G, target_height=10.0)
+scale = normalize_positions(G, target_height=10.0)
 intersection_points = normalize_intersections(G, intersections)
-
-# First Betti number (number of independent cycles): β₁ = E - V + C
-betti_1 = G.number_of_edges() - G.number_of_nodes() + nx.number_connected_components(G)
-print(f'β₁ = {betti_1} independent cycles')
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
-    output_path="lattice.pdf",
+    output_path="intersections.pdf",
     intersections=intersection_points,
-    show_vertex_ids=True,
     show_intersections=True
+)
+
+################################################################################
+# Topology
+################################################################################
+print(f'\n β₁ = {betti_1(G)} (independent cycles)')
+
+bounded_faces, outer_nodes, areas, centers = extract_faces(G, scale)
+print(f'\nOuter face: {len(outer_nodes)} nodes')
+print('  ', outer_nodes, '\n')
+for i, (center, area) in enumerate(zip(centers, areas)):
+    print(f'Face {i}: center=({center[0]:.2f}, {center[1]:.2f}), area={area:.2f}')
+
+plot_lattice(
+    G, cxt, lattice.nodes, coords,
+    output_path="faces.pdf",
+    intersections=intersection_points,
+    show_intersections=True,
+    cycles=bounded_faces,
+    areas=areas,
+    centers=centers,
+    show_face_areas=True
 )

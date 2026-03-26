@@ -17,10 +17,16 @@ def plot_lattice(
         coordinates: Dict,
         output_path: str = "labeling.pdf",
         title: str = '',
-        intersections: List[Tuple] = [],
-        # --- intersection markers ---
         show_vertex_ids: bool  = False,
-        show_intersections: bool = False
+        # intersections
+        intersections: List[Tuple] = [],
+        show_intersections: bool = False,
+        # faces
+        cycles: List = [],
+        areas: List[float] = [],
+        centers: List[Tuple] = [],
+        show_face_areas: bool = False,
+        show_face_sizes: bool = False
 ) -> None:
     '''
     Draw the lattice diagram and save to a PDF.
@@ -51,13 +57,13 @@ def plot_lattice(
                 ha='center', va='bottom', fontsize=12, fontweight='bold', c='blue',
             )
 
-    # ##### edges (cover-relation) #####
+    ##### edges (cover-relation) #####
     for i, j in Lattice(context).cover_relations():
         x0, y0 = _pos(i)
         x1, y1 = _pos(j)
         ax.plot([x0, x1], [y0, y1], color='black', linewidth=2.5, zorder=2)
 
-    # ##### intersection markers #####
+    ##### intersection markers #####
     if show_intersections:
         for pt in intersections:
             ax.scatter(
@@ -68,12 +74,33 @@ def plot_lattice(
                 s=150,        # Matched vertex size (150)
                 zorder=10     # Kept high zorder to stay on top
             )
-            # ax.scatter(pt[0], pt[1], facecolor='red', edgecolor='red', linewidth=5, s=100, zorder=10)
+
+    ##### faces #####
+    if show_face_areas and cycles and areas:
+        norm = plt.Normalize(min(areas), max(areas))
+        for face, area, center in zip(cycles, areas, centers):
+            pts = [G.nodes[n]['pos'] for n in face]
+            patch = mpatches.Polygon(
+                pts, closed=True,
+                facecolor=cmap(norm(area)), edgecolor='none',
+                alpha=0.4, zorder=1,
+            )
+            ax.add_patch(patch)
+            if show_face_sizes:
+                ax.annotate(
+                    f'{area:.2f}', xy=center,
+                    ha='center', va='center',
+                    fontsize=9, color='black', zorder=5,
+                )
+        sm = cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(min(areas), max(areas)))
+        sm.set_array([])
+        plt.colorbar(sm, ax=ax, label=r'Face area ($\mathrm{mm}^2$)')
 
     ax.set_aspect('equal')
     ax.axis('off')
+    plt.tight_layout()
 
     fig.canvas.draw()
 
-    plt.savefig(output_path, format="pdf")
+    plt.savefig(output_path, format="pdf", bbox_inches='tight')
     plt.close(fig)
