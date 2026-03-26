@@ -5,6 +5,7 @@ from intersection import *
 from utils import *
 from topology import *
 from label import *
+from filter import *
 from plotting import *
 
 ################################################################################ 
@@ -109,6 +110,28 @@ for node_id in lattice.nodes:
 plot_lattice(
     G, cxt, lattice.nodes, coords,
     output_path="general_label_candidates.pdf",
+    intersections=intersection_points,
+    cycles=bounded_faces,
+    areas=areas,
+    centers=centers,
+    label_candidates=label_candidates,
+    label_texts=label_texts,
+    show_label_candidates=True,
+    colored_label_candidates=True
+)
+
+################################################################################
+# Restrict outer nodes to outward-facing candidates
+################################################################################
+top_node = min(lattice.nodes)
+bottom_node = max(lattice.nodes)
+label_candidates = restrict_outer_node_candidates(
+    G, label_candidates, outer_nodes, top_node, bottom_node
+)
+
+plot_lattice(
+    G, cxt, lattice.nodes, coords,
+    output_path="filtered_outer.pdf",
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
