@@ -71,6 +71,24 @@ def _draw_candidate(
         zorder=7,
     )
 
+def _add_inner_boxes(ax, fig, text_colour_pairs: list) -> None:
+    '''
+    '''
+    renderer = fig.canvas.get_renderer()
+    inv = ax.transData.inverted()
+    for txt, colour in text_colour_pairs:
+        bb = txt.get_tightbbox(renderer=renderer)
+        if bb is None:
+            continue
+        (x0, y0), (x1, y1) = inv.transform([(bb.x0, bb.y0), (bb.x1, bb.y1)])
+        ax.add_patch(mpatches.FancyBboxPatch(
+            (x0, y0), x1 - x0, y1 - y0,
+            boxstyle='square,pad=0',
+            facecolor='none', edgecolor=colour,
+            alpha=0.9, linestyle='-', linewidth=0.8,
+            zorder=4,
+        ))
+
 def plot_lattice(
         G: nx.Graph,
         context: FormalContext,
@@ -184,8 +202,11 @@ def plot_lattice(
 
     ax.set_aspect('equal')
     ax.axis('off')
+    plt.tight_layout()
 
     fig.canvas.draw()
+    if colored_label_candidates and text_colour_pairs:
+        _add_inner_boxes(ax, fig, text_colour_pairs)
 
-    plt.savefig(output_path, format="pdf")
+    plt.savefig(output_path, format="pdf", bbox_inches='tight')
     plt.close(fig)

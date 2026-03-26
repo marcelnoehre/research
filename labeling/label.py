@@ -103,7 +103,7 @@ def compute_label_candidates(
         concepts: List[int],
         label_text: str,
         label_type: str = 'extent',
-        padding_x_mm: float = 3.0,
+        padding_x_mm: float = 2.0,
         padding_y_mm: float = 2.0,
 ) -> Dict[int, List[LabelCandidate]]:
     '''

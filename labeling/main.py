@@ -87,7 +87,7 @@ for node_id in lattice.nodes:
     if label_config['general']:
         general_txt = wrap_label_text(f'Concept {node_id}', formatter=str)
         label_texts[(node_id, 'general')] = general_txt
-        per_node += compute_label_candidates(G, concepts=[node_id], label_text=general_txt, label_type='extent', padding_x_mm=3.0, padding_y_mm=2.0)[node_id]
+        per_node += compute_label_candidates(G, concepts=[node_id], label_text=general_txt, label_type='extent', padding_x_mm=2.0, padding_y_mm=2.0)[node_id]
     
     if label_config['extent']:
         objects = sorted(str(g) for g in lattice.lattice.get_concept_new_extent(node_id))
