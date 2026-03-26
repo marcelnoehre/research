@@ -2,7 +2,7 @@ import copy
 import networkx as nx
 
 from typing import Dict, List
-from shapely.geometry import LineString, box
+from shapely.geometry import LineString, Point, box
 
 from label import LabelCandidate
 from topology import node_to_face_edges
@@ -32,6 +32,31 @@ def restrict_outer_node_candidates(
             allowed = {'right', 'top_right', 'bottom_right'} if left else {'left', 'top_left', 'bottom_left'}
 
         filtered_candidates[node] = [c for c in filtered_candidates[node] if c.anchor in allowed]
+
+    return filtered_candidates
+
+def filter_candidates_by_nodes(
+        G: nx.Graph,
+        candidates: Dict[int, List[LabelCandidate]],
+        concepts: List[int],
+) -> Dict[int, List[LabelCandidate]]:
+    '''
+    '''
+    filtered_candidates: Dict[int, List[LabelCandidate]] = {}
+
+    for node, node_candidates in candidates.items():
+        surviving = []
+        for candidate in node_candidates:
+            ebl, _, etr, _ = candidate.expanded_bbox_corners
+            expanded = box(ebl[0], ebl[1], etr[0], etr[1])
+            occupied = any(
+                expanded.contains(Point(G.nodes[other]['pos']))
+                for other in concepts
+                if other != node and other in G.nodes
+            )
+            if not occupied:
+                surviving.append(candidate)
+        filtered_candidates[node] = surviving
 
     return filtered_candidates
 

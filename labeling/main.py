@@ -141,6 +141,24 @@ plot_lattice(
 )
 
 ################################################################################
+# Filter candidates that contain another concept node in their outer bbox
+################################################################################
+label_candidates = filter_candidates_by_nodes(G, label_candidates, lattice.nodes)
+
+plot_lattice(
+    G, cxt, lattice.nodes, coords,
+    output_path="filter_unclear.pdf",
+    intersections=intersection_points,
+    cycles=bounded_faces,
+    areas=areas,
+    centers=centers,
+    label_candidates=label_candidates,
+    label_texts=label_texts,
+    show_label_candidates=True,
+    colored_label_candidates=True
+)
+
+################################################################################
 # Filter candidates that collide with incident face edges
 ################################################################################
 label_candidates = filter_candidates_by_edges(G, label_candidates, bounded_faces, outer_nodes)
