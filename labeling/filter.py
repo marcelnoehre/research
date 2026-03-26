@@ -1,5 +1,5 @@
+import copy
 import networkx as nx
-import statistics
 
 from typing import Dict, List
 from shapely.geometry import LineString, box
@@ -19,31 +19,19 @@ def restrict_outer_node_candidates(
     if not outer_nodes:
         raise ValueError('Received no outer nodes!')
 
-    outer_set = set(outer_nodes)
+    filtered_candidates = copy.deepcopy(candidates)
+    left = False
 
-    # split into left <-> right by x-coordinates
-    all_xs = [G.nodes[n]['pos'][0] for n in G.nodes]
-    x_mid = statistics.median(all_xs)
-    filtered_candidates: Dict[int, List[LabelCandidate]] = {}
-
-    for node, node_candidates in candidates.items():
-        if node not in outer_set:
-            filtered_candidates[node] = node_candidates
-            continue
+    for node in outer_nodes:
         if node == top_node:
             allowed = {'bottom', 'bottom_left', 'bottom_right'}
         elif node == bottom_node:
             allowed = {'top', 'top_left', 'top_right'}
+            left = True
         else:
-            x_pos = G.nodes[node]['pos'][0]
-            # left
-            if x_pos <= x_mid:
-                allowed = {'right', 'top_right', 'bottom_right'}
-            #right
-            else:
-                allowed = {'left', 'top_left', 'bottom_left'}
+            allowed = {'right', 'top_right', 'bottom_right'} if left else {'left', 'top_left', 'bottom_left'}
 
-        filtered_candidates[node] = [c for c in node_candidates if c.anchor in allowed]
+        filtered_candidates[node] = [c for c in filtered_candidates[node] if c.anchor in allowed]
 
     return filtered_candidates
 

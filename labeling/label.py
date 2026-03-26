@@ -169,8 +169,8 @@ def compute_label_candidates(
     exp_y = (padding_y_mm * units_per_mm)
 
     _expand_factors: Dict[str, Tuple[float, float, float, float]] = {
-        'top': (exp_x, exp_x, 0, exp_y),
-        'bottom': (exp_x, exp_x, exp_y, 0),
+        'top': (exp_x, exp_x, exp_y, 0),
+        'bottom': (exp_x, exp_x, 0, exp_y),
         'left': (0, exp_x, exp_y, exp_y),
         'right': (exp_x, 0, exp_y, exp_y),
         'bottom_right': (exp_x, 0, 0, exp_y),
