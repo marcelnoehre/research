@@ -125,13 +125,29 @@ plot_lattice(
 ################################################################################
 top_node = min(lattice.nodes)
 bottom_node = max(lattice.nodes)
-label_candidates = restrict_outer_node_candidates(
-    G, label_candidates, outer_nodes, top_node, bottom_node
-)
+label_candidates = restrict_outer_node_candidates(G, label_candidates, outer_nodes, top_node, bottom_node)
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
     output_path="filtered_outer.pdf",
+    intersections=intersection_points,
+    cycles=bounded_faces,
+    areas=areas,
+    centers=centers,
+    label_candidates=label_candidates,
+    label_texts=label_texts,
+    show_label_candidates=True,
+    colored_label_candidates=True
+)
+
+################################################################################
+# Filter candidates that collide with incident face edges
+################################################################################
+label_candidates = filter_candidates_by_edges(G, label_candidates, bounded_faces, outer_nodes)
+
+plot_lattice(
+    G, cxt, lattice.nodes, coords,
+    output_path="filtered_ink_edges.pdf",
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,

@@ -2,8 +2,10 @@ import networkx as nx
 import statistics
 
 from typing import Dict, List
+from shapely.geometry import LineString, box
 
 from label import LabelCandidate
+from topology import node_to_face_edges
 
 def restrict_outer_node_candidates(
         G: nx.Graph,
@@ -22,7 +24,7 @@ def restrict_outer_node_candidates(
     # split into left <-> right by x-coordinates
     all_xs = [G.nodes[n]['pos'][0] for n in G.nodes]
     x_mid = statistics.median(all_xs)
-    filtered_candidates = {}
+    filtered_candidates: Dict[int, List[LabelCandidate]] = {}
 
     for node, node_candidates in candidates.items():
         if node not in outer_set:
@@ -42,5 +44,33 @@ def restrict_outer_node_candidates(
                 allowed = {'left', 'top_left', 'bottom_left'}
 
         filtered_candidates[node] = [c for c in node_candidates if c.anchor in allowed]
+
+    return filtered_candidates
+
+def filter_candidates_by_edges(
+        G: nx.Graph,
+        candidates: Dict[int, List[LabelCandidate]],
+        bounded_faces: List[List],
+        outer_nodes: List
+) -> Dict[int, List[LabelCandidate]]:
+    '''
+    '''
+    filtered_candidates: Dict[int, List[LabelCandidate]] = {}
+
+    for node, node_candidates in candidates.items():
+        incident_edges = node_to_face_edges(node, bounded_faces, outer_nodes)
+        lines = [
+            LineString([G.nodes[u]['pos'], G.nodes[v]['pos']])
+            for u, v in incident_edges
+        ]
+
+        surviving = []
+        for candidate in node_candidates:
+            ibl, _, itr, _ = candidate.inner_bbox_corners
+            inner_shape = box(ibl[0], ibl[1], itr[0], itr[1])
+            if not any(inner_shape.intersects(line) for line in lines):
+                surviving.append(candidate)
+
+        filtered_candidates[node] = surviving
 
     return filtered_candidates

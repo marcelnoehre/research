@@ -184,9 +184,8 @@ def plot_lattice(
 
     ax.set_aspect('equal')
     ax.axis('off')
-    plt.tight_layout()
 
     fig.canvas.draw()
 
-    plt.savefig(output_path, format="pdf", bbox_inches='tight')
+    plt.savefig(output_path, format="pdf")
     plt.close(fig)

@@ -1,6 +1,6 @@
 import networkx as nx
 
-from typing import List, Tuple
+from typing import List, Tuple, Set
 from shapely.geometry import Polygon
 
 def _shoelace(G: nx.Graph, nodes: List, scale: float) -> float:
@@ -90,3 +90,30 @@ def extract_faces(G: nx.Graph, scale: float):
     centers = [_centroid(G, f) for f in bounded_faces]
 
     return bounded_faces, outer_nodes, areas, centers
+
+def node_to_face_edges(
+        node: int,
+        bounded_faces: List[List],
+        outer_nodes: List,
+) -> List[Tuple]:
+    '''
+    Collect all unique edges from faces that contain `node`
+    
+    Returns
+    face_edges : List
+        a list of (u, v) tuples.
+    '''
+    all_faces = bounded_faces + [outer_nodes]
+    seen: Set[frozenset] = set()
+    edges = []
+    for face in all_faces:
+        if node not in face:
+            continue
+
+        face_edges = {frozenset((face[i], face[(i + 1) % len(face)])) for i in range(len(face))}
+        for e in face_edges:
+            if e not in seen:
+                seen.add(e)
+                u, v = tuple(e)
+                edges.append((u, v))
+    return edges
