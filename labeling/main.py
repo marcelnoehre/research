@@ -175,3 +175,21 @@ plot_lattice(
     show_label_candidates=True,
     colored_label_candidates=True
 )
+
+################################################################################
+# Filter by neighbor direction if 2 candidates of same type remain
+################################################################################
+label_candidates = filter_candidates_by_neighbor_direction(G, label_candidates, lattice.lattice)
+
+plot_lattice(
+    G, cxt, lattice.nodes, coords,
+    output_path="filtered_neighbor.pdf",
+    intersections=intersection_points,
+    cycles=bounded_faces,
+    areas=areas,
+    centers=centers,
+    label_candidates=label_candidates,
+    label_texts=label_texts,
+    show_label_candidates=True,
+    colored_label_candidates=True
+)

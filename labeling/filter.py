@@ -2,6 +2,7 @@ import copy
 import networkx as nx
 
 from typing import Dict, List
+from fcapy.lattice import ConceptLattice
 from shapely.geometry import LineString, Point, box
 
 from label import LabelCandidate
@@ -24,9 +25,9 @@ def restrict_outer_node_candidates(
 
     for node in outer_nodes:
         if node == top_node:
-            allowed = {'bottom', 'bottom_left', 'bottom_right'}
+            allowed = {'bottom'}
         elif node == bottom_node:
-            allowed = {'top', 'top_left', 'top_right'}
+            allowed = {'top'}
             left = True
         else:
             allowed = {'right', 'top_right', 'bottom_right'} if left else {'left', 'top_left', 'bottom_left'}
@@ -86,4 +87,61 @@ def filter_candidates_by_edges(
 
         filtered_candidates[node] = surviving
 
+    return filtered_candidates
+
+def filter_candidates_by_neighbor_direction(
+        G: nx.Graph,
+        candidates: Dict[int, List[LabelCandidate]],
+        lattice: ConceptLattice
+) -> Dict[int, List[LabelCandidate]]:
+    '''
+    '''
+    filtered_candidates = copy.deepcopy(candidates)
+
+    for node, node_candidates in candidates.items():
+        print(f'### {node} ###')
+        if not node_candidates:
+            filtered_candidates[node] = node_candidates
+            continue
+
+        node_x = G.nodes[node]['pos'][0]
+        node_y = G.nodes[node]['pos'][1]
+
+        neighbors = list(lattice.children(node)) + list(lattice.parents(node))
+
+        has_top_left = any((G.nodes[nb]['pos'][0] < node_x and G.nodes[nb]['pos'][1] > node_y) for nb in neighbors)
+        has_bottom_left = any((G.nodes[nb]['pos'][0] < node_x and G.nodes[nb]['pos'][1] < node_y) for nb in neighbors)
+        has_top_right = any((G.nodes[nb]['pos'][0] > node_x and G.nodes[nb]['pos'][1] > node_y) for nb in neighbors)
+        has_bottom_right = any((G.nodes[nb]['pos'][0] > node_x and G.nodes[nb]['pos'][1] < node_y) for nb in neighbors)
+
+        filter = []
+        if has_top_left:
+            filter.append('bottom')
+            filter.append('right')
+            filter.append('bottom_right')
+        if has_top_right:
+            filter.append('bottom')
+            filter.append('left')
+            filter.append('bottom_left')
+        if has_bottom_left:
+            filter.append('top')
+            filter.append('right')
+            filter.append('top_right')
+        if has_bottom_right:
+            filter.append('top')
+            filter.append('left')
+            filter.append('top_left')
+
+        by_type: Dict[str, List[LabelCandidate]] = {}
+        for c in node_candidates:
+            by_type.setdefault(c.label_type, []).append(c)
+
+        for group in by_type.values():
+            filtered = [c.anchor for c in group if c.anchor in filter]
+
+            # do not filter all
+            if len(filtered) == len(group):
+                continue
+            filtered_candidates[node] = [c for c in filtered_candidates[node] if c.anchor not in filtered]
+    
     return filtered_candidates

@@ -181,8 +181,8 @@ def plot_lattice(
         plt.colorbar(sm, ax=ax, label=r'Face area ($\mathrm{mm}^2$)')
 
     ##### label candidates #####
+    text_colour_pairs = []
     if show_label_candidates and label_candidates and label_texts:
-        text_colour_pairs = []
         for node_id, candidates in label_candidates.items():
             for candidate in candidates:
                 text = label_texts.get((node_id, candidate.label_type), label_texts.get(node_id, str(node_id)))
