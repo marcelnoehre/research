@@ -74,9 +74,9 @@ plot_lattice(
 # Label Candidates
 ################################################################################
 label_config = {
-    'general': True,
-    'extent':  False,
-    'intent':  False
+    'general': False,
+    'extent':  True,
+    'intent':  True
 }
 label_candidates = {}
 label_texts = {}
@@ -92,15 +92,17 @@ for node_id in lattice.nodes:
     if label_config['extent']:
         objects = sorted(str(g) for g in lattice.lattice.get_concept_new_extent(node_id))
         extent_txt = wrap_label_text(', '.join(objects), formatter=str)
-        label_texts[(node_id, 'extent')] = extent_txt
+        if extent_txt:
+            label_texts[(node_id, 'extent')] = extent_txt
     
     if label_config['intent']:
         attributes = sorted(str(m) for m in lattice.lattice.get_concept_new_intent(node_id))
         intent_txt = wrap_label_text(', '.join(attributes), formatter=str)
-        label_texts[(node_id, 'intent')] = intent_txt
+        if intent_txt:
+            label_texts[(node_id, 'intent')] = intent_txt
 
     for label_type, is_active in label_config.items():
-        if not is_active:
+        if not is_active or not label_texts.get((node_id, label_type)):
             continue
         
         per_node += compute_label_candidates(G, [node_id], label_texts[(node_id, label_type)], label_type)[node_id]

@@ -49,12 +49,12 @@ class LabelCandidate:
 def wrap_label_text(plain_text: str, formatter=str) -> str:
     '''
     '''
+    # split into words
+    words = plain_text.split()
+
     # forced to one row or smaller than split size
     if K_ROWS == 1 or len(plain_text) <= MAX_ROW_CHARS or len(words) == 1:
         return formatter(plain_text)
-    
-    # split into words
-    words = plain_text.split()
 
     # split into k rows
     # TODO: more than 2 rows
