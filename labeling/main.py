@@ -75,9 +75,9 @@ plot_lattice(
 # Label Candidates
 ################################################################################
 label_config = {
-    'general': False,
-    'extent':  True,
-    'intent':  True
+    'general': True,
+    'extent':  False,
+    'intent':  False
 }
 label_candidates = {}
 label_texts = {}
@@ -88,14 +88,13 @@ for node_id in lattice.nodes:
     if label_config['general']:
         general_txt = wrap_label_text(f'Concept {node_id}', formatter=str)
         label_texts[(node_id, 'general')] = general_txt
-        per_node += compute_label_candidates(G, concepts=[node_id], label_text=general_txt, label_type='extent', padding_x_mm=2.0, padding_y_mm=2.0)[node_id]
-    
+
     if label_config['extent']:
         objects = sorted(str(g) for g in lattice.lattice.get_concept_new_extent(node_id))
         extent_txt = wrap_label_text(', '.join(objects), formatter=str)
         if extent_txt:
             label_texts[(node_id, 'extent')] = extent_txt
-    
+
     if label_config['intent']:
         attributes = sorted(str(m) for m in lattice.lattice.get_concept_new_intent(node_id))
         intent_txt = wrap_label_text(', '.join(attributes), formatter=str)
@@ -105,8 +104,8 @@ for node_id in lattice.nodes:
     for label_type, is_active in label_config.items():
         if not is_active or not label_texts.get((node_id, label_type)):
             continue
-        
-        per_node += compute_label_candidates(G, [node_id], label_texts[(node_id, label_type)], label_type)[node_id]
+        per_node += compute_label_candidates(G, [node_id], label_texts[(node_id, label_type)],
+                        label_type)[node_id]
 
     label_candidates[node_id] = per_node
 
@@ -214,3 +213,8 @@ plot_lattice(
     show_label_candidates=True,
     colored_label_candidates=True
 )
+
+################################################################################
+# Overflow Labels
+################################################################################
+# TODO
