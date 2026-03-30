@@ -29,7 +29,7 @@ class LabelCandidate:
     anchor : str
         which corner or side of the outer bbox is placed at the node position
     label_type : str
-        'extent' (objects, below node) or 'intent' (attributes, above node)
+        'general', 'extent' (objects, below node) or 'intent' (attributes, above node)
     bbox_corners : Tuple[Tuple, Tuple, Tuple, Tuple]
         outer bbox (BL, BR, TR, TL) in graph units
     inner_bbox_corners : Tuple[Tuple, Tuple, Tuple, Tuple]

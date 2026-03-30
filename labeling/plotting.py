@@ -185,10 +185,11 @@ def plot_lattice(
     if show_label_candidates and label_candidates and label_texts:
         for node_id, candidates in label_candidates.items():
             for candidate in candidates:
-                text = label_texts.get((node_id, candidate.label_type), label_texts.get(node_id, str(node_id)))
-                txt = _draw_candidate(ax, candidate, text, fontsize_pt, colored_label_candidates)
-                # only measure ink box for chosen labels
-                text_colour_pairs.append((txt, _ANCHOR_COLOURS[candidate.anchor]))
+                text = label_texts.get((node_id, candidate.label_type))
+                if text is not None:
+                    txt = _draw_candidate(ax, candidate, text, fontsize_pt, colored_label_candidates)
+                    # only measure ink box for chosen labels
+                    text_colour_pairs.append((txt, _ANCHOR_COLOURS[candidate.anchor]))
 
         legend_handles = [
             mpatches.Patch(facecolor=colour, edgecolor=colour,

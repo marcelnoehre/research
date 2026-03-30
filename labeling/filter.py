@@ -103,6 +103,9 @@ def filter_candidates_by_neighbor_direction(
         if not node_candidates:
             filtered_candidates[node] = node_candidates
             continue
+        if len(node_candidates) == 1:
+            filtered_candidates[node] = node_candidates
+            continue
 
         node_x = G.nodes[node]['pos'][0]
         node_y = G.nodes[node]['pos'][1]
