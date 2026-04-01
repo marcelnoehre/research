@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple
 from fcapy.context import FormalContext
 
 from fca.lattice import Lattice
-from label import LabelCandidate
+from label import LabelCandidate, OverflowLabel
 
 _ANCHOR_COLOURS = {
     'top_left':     '#d62728',   # tab:red
@@ -71,6 +71,49 @@ def _draw_candidate(
         zorder=7,
     )
 
+def _draw_overflow_candidate(
+        ax,
+        candidate: OverflowLabel,
+        label_text: str,
+        fontsize_pt: float,
+        colored_label_candidates: bool = False
+):
+    bl, br, tr, tl = candidate.bbox_corners
+    colour = '#17becf' # tab:cyan
+
+    if colored_label_candidates:
+        ax.add_patch(mpatches.Polygon(
+            [bl, br, tr, tl], closed=True,
+            facecolor=colour, edgecolor=colour,
+            alpha=0.30, linestyle='-', linewidth=1.6,
+            zorder=3,
+        ))
+
+        if candidate.anchor != 'overflow':
+            # Anchor dot — full size for chosen, tiny for rejected
+            anchor_pt = {
+                'top':          ((tl[0] + tr[0]) / 2, tl[1]),
+                'bottom':       ((bl[0] + br[0]) / 2, bl[1]),
+                'left':         (tl[0], (tl[1] + bl[1]) / 2),
+                'right':        (tr[0], (tr[1] + br[1]) / 2),
+                'top_left':     tl,
+                'top_right':    tr,
+                'bottom_left':  bl,
+                'bottom_right': br,
+            }[candidate.anchor]
+            ax.scatter(*anchor_pt, color=colour, s=30, zorder=6, alpha=0.9)
+
+    text_color = colour if colored_label_candidates else 'black'
+    cx, cy = candidate.center
+    return ax.text(
+        cx, cy, label_text,
+        ha='center', va='center',
+        fontsize=fontsize_pt,
+        color=text_color,
+        alpha=1.0,
+        zorder=7,
+    )
+
 def _add_inner_boxes(ax, fig, text_colour_pairs: list) -> None:
     '''
     '''
@@ -110,7 +153,9 @@ def plot_lattice(
         label_texts: Dict = {},
         fontsize_pt: float = matplotlib.rcParams.get('font.size', 10.0),
         show_label_candidates: bool = False,
-        colored_label_candidates: bool = False
+        colored_label_candidates: bool = False,
+        overflow_labels: Dict = {},
+        show_overflow_labels: bool = False
 ) -> None:
     '''
     Draw the lattice diagram and save to a PDF.
@@ -198,8 +243,13 @@ def plot_lattice(
         ]
         ax.legend(handles=legend_handles, loc='upper left',
                   fontsize=8, title='Label anchor', framealpha=0.8)
-
-
+    
+    ##### overflow candidates #####
+    if show_overflow_labels and overflow_labels and label_texts:
+        for overflow_label in overflow_labels.values():
+            text = overflow_label.text
+            txt = _draw_overflow_candidate(ax, overflow_label, text, fontsize_pt, colored_label_candidates)
+            text_colour_pairs.append((txt, '#17becf')) # tab:cyan for overflow
 
     ax.set_aspect('equal')
     ax.axis('off')

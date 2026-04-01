@@ -44,7 +44,7 @@ intersection_points = normalize_intersections(G, intersections)
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
-    output_path="intersections.pdf",
+    output_path="figs/intersections.pdf",
     intersections=intersection_points,
     show_intersections=True
 )
@@ -62,7 +62,7 @@ for i, (center, area) in enumerate(zip(centers, areas)):
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
-    output_path="faces.pdf",
+    output_path="figs/faces.pdf",
     intersections=intersection_points,
     show_intersections=True,
     cycles=bounded_faces,
@@ -111,7 +111,7 @@ for node_id in lattice.nodes:
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
-    output_path="general_label_candidates.pdf",
+    output_path="figs/general_label_candidates.pdf",
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
@@ -131,7 +131,7 @@ label_candidates = restrict_outer_node_candidates(G, label_candidates, outer_nod
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
-    output_path="filtered_outer.pdf",
+    output_path="figs/filtered_outer.pdf",
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
@@ -149,7 +149,7 @@ label_candidates = filter_candidates_by_nodes(G, label_candidates, lattice.nodes
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
-    output_path="filter_unclear.pdf",
+    output_path="figs/filter_unclear.pdf",
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
@@ -167,7 +167,7 @@ label_candidates = filter_candidates_by_edges(G, label_candidates, bounded_faces
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
-    output_path="filtered_ink_edges.pdf",
+    output_path="figs/filtered_ink_edges.pdf",
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
@@ -185,7 +185,7 @@ label_candidates = filter_candidates_by_neighbor_direction(G, label_candidates, 
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
-    output_path="filtered_neighbor.pdf",
+    output_path="figs/filtered_neighbor.pdf",
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
@@ -203,7 +203,7 @@ label_candidates, _ = hybrid_label_placement(label_candidates, False)
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
-    output_path="hybrid.pdf",
+    output_path="figs/hybrid.pdf",
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
@@ -215,6 +215,25 @@ plot_lattice(
 )
 
 ################################################################################
-# Overflow Labels
+# Overflow Candidates
 ################################################################################
-# TODO
+overflow_candidates = {}
+if label_config['general']:
+    for node_id in lattice.nodes:
+        if not label_candidates[node_id]:
+            overflow_candidates[node_id] = compute_overflow_label(G, node_id, label_texts.get((node_id, 'general'), ''), label_type='general')
+
+plot_lattice(
+    G, cxt, lattice.nodes, coords,
+    output_path="figs/overflow_candidates.pdf",
+    intersections=intersection_points,
+    cycles=bounded_faces,
+    areas=areas,
+    centers=centers,
+    label_candidates=label_candidates,
+    label_texts=label_texts,
+    show_label_candidates=True,
+    colored_label_candidates=True,
+    overflow_labels=overflow_candidates,
+    show_overflow_labels=True
+)
