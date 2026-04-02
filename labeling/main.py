@@ -8,7 +8,8 @@ from label import *
 from filter import *
 from plotting import *
 from hybrid import *
-from overflow import *
+from overflow_bounded import *
+from overflow_unbounded import *
 
 ################################################################################ 
 # Data
@@ -257,6 +258,27 @@ plot_lattice(
     colored_label_candidates=True,
     overflow_labels=overflow_candidates,
     show_overflow_labels=True
+)
+
+################################################################################
+# Outer Overflow Labels
+################################################################################
+overflow_candidates = outer_overflow_labels(G, label_candidates, overflow_candidates, outer_nodes)
+
+plot_lattice(
+    G, cxt, lattice.nodes, coords,
+    output_path="figs/outer_overflow_candidates.pdf",
+    intersections=intersection_points,
+    cycles=bounded_faces,
+    areas=areas,
+    centers=centers,
+    label_candidates=label_candidates,
+    label_texts=label_texts,
+    show_label_candidates=True,
+    colored_label_candidates=True,
+    overflow_labels=overflow_candidates,
+    show_overflow_labels=True,
+    show_vertex_ids=True
 )
 
 ################################################################################
