@@ -236,12 +236,25 @@ plot_lattice(
     show_label_candidates=True,
     colored_label_candidates=True,
     overflow_labels=overflow_candidates,
-    show_overflow_labels=True,
-    show_face_areas=True,
-    show_face_sizes=True
+    show_overflow_labels=True
 )
 
 ################################################################################
 # Inner Overflow Labels
 ################################################################################
-inner_overflow_labels(G, label_candidates, overflow_candidates, bounded_faces, centers)
+overflow_candidates = inner_overflow_labels(G, label_candidates, overflow_candidates, bounded_faces, centers)
+
+plot_lattice(
+    G, cxt, lattice.nodes, coords,
+    output_path="figs/inner_overflow_candidates.pdf",
+    intersections=intersection_points,
+    cycles=bounded_faces,
+    areas=areas,
+    centers=centers,
+    label_candidates=label_candidates,
+    label_texts=label_texts,
+    show_label_candidates=True,
+    colored_label_candidates=True,
+    overflow_labels=overflow_candidates,
+    show_overflow_labels=True
+)
