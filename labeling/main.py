@@ -8,6 +8,7 @@ from label import *
 from filter import *
 from plotting import *
 from hybrid import *
+from overflow import *
 
 ################################################################################ 
 # Data
@@ -235,5 +236,12 @@ plot_lattice(
     show_label_candidates=True,
     colored_label_candidates=True,
     overflow_labels=overflow_candidates,
-    show_overflow_labels=True
+    show_overflow_labels=True,
+    show_face_areas=True,
+    show_face_sizes=True
 )
+
+################################################################################
+# Inner Overflow Labels
+################################################################################
+inner_overflow_labels(G, label_candidates, overflow_candidates, bounded_faces, centers)

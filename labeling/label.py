@@ -227,6 +227,7 @@ class OverflowLabel:
     Defaults to an overflow anchor and ignores expanded bboxes for 
     node exclusion checks.
     """
+    node_id: int
     label_type: str
     bbox_corners: Tuple[Tuple, Tuple, Tuple, Tuple] # BL, BR, TR, TL
     inner_bbox_corners: Tuple[Tuple, Tuple, Tuple, Tuple] # Ink only
@@ -239,8 +240,8 @@ def compute_overflow_label(
     node: int,
     label_text: str,
     label_type: str,
-    padding_x_mm: float = 1.0,
-    padding_y_mm: float = 1.0,
+    padding_x_mm: float = 2.0,
+    padding_y_mm: float = 2.0,
 ) -> OverflowLabel:
     '''
     Creates a centered overflow label for a specific node.
@@ -271,6 +272,7 @@ def compute_overflow_label(
     itr, itl = (cx + half_iw, cy + half_ih), (cx - half_iw, cy + half_ih)
 
     return OverflowLabel(
+        node_id=node,
         label_type=label_type,
         bbox_corners=(bl, br, tr, tl),
         inner_bbox_corners=(ibl, ibr, itr, itl),
