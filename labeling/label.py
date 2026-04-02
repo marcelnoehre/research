@@ -153,11 +153,14 @@ def compute_label_candidates(
     half_iw = (ink_w_mm  * units_per_mm) / 2.0
     half_ih = (ink_h_mm  * units_per_mm) / 2.0
 
+    # side gap
+    gap_mm = 1 * units_per_mm
+
     anchor_offsets: Dict[str, Tuple[float, float]] = {
-        'top': ( 0.0, -half_h),
-        'left': ( half_w, 0.0),
-        'bottom': ( 0.0, half_h),
-        'right': (-half_w, 0.0),
+        'top': ( 0.0, -(half_h + gap_mm)),
+        'left': ( half_w + gap_mm, 0.0),
+        'bottom': ( 0.0, half_h + gap_mm),
+        'right': (-(half_w + gap_mm), 0.0),
         'top_left': ( half_w, -half_h),
         'top_right': (-half_w, -half_h),
         'bottom_left': ( half_w, half_h),

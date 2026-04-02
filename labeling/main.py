@@ -200,7 +200,7 @@ plot_lattice(
 ################################################################################
 # Hybrid Approach
 ################################################################################
-label_candidates, _ = hybrid_label_placement(label_candidates, False)
+label_candidates, _ = hybrid_label_placement(label_candidates, True)
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
@@ -255,6 +255,23 @@ plot_lattice(
     label_texts=label_texts,
     show_label_candidates=True,
     colored_label_candidates=True,
+    overflow_labels=overflow_candidates,
+    show_overflow_labels=True
+)
+
+################################################################################
+# Final Drawing
+################################################################################
+plot_lattice(
+    G, cxt, lattice.nodes, coords,
+    output_path="figs/final.pdf",
+    intersections=intersection_points,
+    cycles=bounded_faces,
+    areas=areas,
+    centers=centers,
+    label_candidates=label_candidates,
+    label_texts=label_texts,
+    show_label_candidates=True,
     overflow_labels=overflow_candidates,
     show_overflow_labels=True
 )
