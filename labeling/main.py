@@ -46,6 +46,12 @@ intersection_points = normalize_intersections(G, intersections)
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
+    output_path="figs/input.pdf",
+    intersections=intersection_points
+)
+
+plot_lattice(
+    G, cxt, lattice.nodes, coords,
     output_path="figs/intersections.pdf",
     intersections=intersection_points,
     show_intersections=True

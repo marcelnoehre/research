@@ -257,7 +257,9 @@ def plot_lattice(
                 )
         sm = cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(min(areas), max(areas)))
         sm.set_array([])
-        plt.colorbar(sm, ax=ax, label=r'Face area ($\mathrm{mm}^2$)')
+        cb = plt.colorbar(sm, ax=ax, shrink=0.8)
+        cb.set_label(r'Face area ($\mathrm{mm}^2$)', fontsize=16)
+        cb.ax.tick_params(labelsize=14)
 
     ##### label candidates #####
     text_colour_pairs = []

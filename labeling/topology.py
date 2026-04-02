@@ -23,6 +23,18 @@ def _centroid(G: nx.Graph, nodes: List) -> Tuple[float, float]:
     c = Polygon(pts).centroid
     return c.x, c.y
 
+def _clockwise(node_ids, G):
+    edge_sum = 0
+    pos = nx.get_node_attributes(G, 'pos') 
+
+    for i in range(len(node_ids)):
+        u = node_ids[i]
+        v = node_ids[(i + 1) % len(node_ids)]
+        p1, p2 = pos[u], pos[v]
+        edge_sum += (p2[0] - p1[0]) * (p2[1] + p1[1])
+
+    return node_ids if edge_sum >= 0 else node_ids[::-1]
+
 def betti_1(G: nx.Graph) -> int:
     '''
     First Betti number (number of independent cycles) 
@@ -82,7 +94,7 @@ def extract_faces(G: nx.Graph, scale: float):
     # The outer face is the one enclosing all others
     face_areas = [(f, _shoelace(G, f, scale)) for f in faces]
     outer_face = max(face_areas, key=lambda x: x[1])[0]
-    outer_nodes: List = list(outer_face)
+    outer_nodes = _clockwise(list(outer_face), G)
 
     bounded = [(f, a) for f, a in face_areas if f is not outer_face]
     bounded_faces = [f for f, _ in bounded]
