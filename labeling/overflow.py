@@ -217,7 +217,7 @@ def _compute_results(
 # Placement
 # ---------------------------------------------------------------------------
 
-def place_overflow_labels(
+def place_inner_overflow_labels(
     G: nx.Graph,
     overflow_candidates: Dict[int, OverflowLabel],
     results: Dict[int, List[int]],
@@ -385,8 +385,8 @@ def inner_overflow_labels(
     # 3. Which faces does each overflow label fit in?
     results = _compute_results(overflow_candidates, processed_faces)
 
-    # 4. Greedy placement
-    placements = place_overflow_labels(
+    # 4. Greedy inner placement
+    placements = place_inner_overflow_labels(
         G, overflow_candidates, results, processed_faces, centers
     )
 
