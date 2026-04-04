@@ -33,7 +33,9 @@ def _clockwise(node_ids, G):
         p1, p2 = pos[u], pos[v]
         edge_sum += (p2[0] - p1[0]) * (p2[1] + p1[1])
 
-    return node_ids if edge_sum >= 0 else node_ids[::-1]
+    lst = node_ids if edge_sum >= 0 else node_ids[::-1]
+    zero_index = lst.index(0)
+    return lst[zero_index:] + lst[:zero_index]
 
 def betti_1(G: nx.Graph) -> int:
     '''
