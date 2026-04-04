@@ -103,8 +103,8 @@ def compute_label_candidates(
         concepts: List[int],
         label_text: str,
         label_type: str = 'extent',
-        padding_x_mm: float = 0.5,
-        padding_y_mm: float = 0.5,
+        padding_x_mm: float = 1.0,
+        padding_y_mm: float = 1.0,
 ) -> Dict[int, List[LabelCandidate]]:
     '''
     For every concept node, return candidate label placements.
@@ -242,8 +242,8 @@ def compute_overflow_label(
     node: int,
     label_text: str,
     label_type: str,
-    padding_x_mm: float = 2.0,
-    padding_y_mm: float = 2.0,
+    padding_x_mm: float = 1.75,
+    padding_y_mm: float = 1.75,
 ) -> OverflowLabel:
     '''
     Creates a centered overflow label for a specific node.

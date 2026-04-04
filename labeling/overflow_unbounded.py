@@ -15,7 +15,7 @@ from overflow_bounded import (
     _update_overflow_label_position,
 )
 
-OUTER_STEP = 2.0
+OUTER_STEP = 0.5
 OUTER_MAX_STEPS = 500
 WEDGE_RADIUS = 1e4  # large enough to always extend beyond any label
 
