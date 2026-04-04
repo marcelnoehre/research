@@ -62,7 +62,6 @@ def _fits(space: Polygon, w: float, h: float) -> bool:
         return False
     return not _eroded_space(space, w, h).is_empty
 
-
 # ---------------------------------------------------------------------------
 # Binding-line validation
 # ---------------------------------------------------------------------------
@@ -75,7 +74,6 @@ def _binding_line_valid(
     placed: List[dict],
     overflow_candidates: Dict[int, OverflowLabel],
 ) -> bool:
-    # Must not intersect any other placed label's bbox
     for rec in placed:
         if rec["label_id"] == own_label_id:
             continue
@@ -84,9 +82,10 @@ def _binding_line_valid(
         if line.intersects(_label_bbox_polygon(cx, cy, w, h)):
             return False
 
-    # Must not come within NODE_BUFFER of any node except own
     for node_id, data in G.nodes(data=True):
         if node_id == own_node_id:
+            continue
+        if not isinstance(node_id, int):  # skip planarization dummy nodes
             continue
         if line.intersects(Point(data["pos"]).buffer(NODE_BUFFER)):
             return False
