@@ -9,12 +9,6 @@ from label import LabelCandidate, OverflowLabel
 
 
 # ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-NODE_BUFFER = 1.0
-
-# ---------------------------------------------------------------------------
 # Geometry helpers
 # ---------------------------------------------------------------------------
 
@@ -85,9 +79,9 @@ def _binding_line_valid(
     for node_id, data in G.nodes(data=True):
         if node_id == own_node_id:
             continue
-        if not isinstance(node_id, int):  # skip planarization dummy nodes
+        if not isinstance(node_id, int):
             continue
-        if line.intersects(Point(data["pos"]).buffer(NODE_BUFFER)):
+        if line.distance(Point(data["pos"])) < 1e-6:
             return False
 
     return True

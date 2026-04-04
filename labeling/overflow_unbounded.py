@@ -8,7 +8,6 @@ from typing import Dict, List, Optional, Tuple
 
 from label import LabelCandidate, OverflowLabel
 from overflow_bounded import (
-    NODE_BUFFER,
     _label_wh,
     _label_bbox_polygon,
     _anchor_points,
@@ -77,13 +76,6 @@ def _binding_line_debug(
         bbox = _label_bbox_polygon(cx, cy, w, h)
         if line.intersects(bbox):
             print(f"    [binding] blocked by placed label {rec['label_id']} at {rec['position']}")
-
-    for node_id, data in G.nodes(data=True):
-        if node_id == own_node_id:
-            continue
-        node_buf = Point(data["pos"]).buffer(NODE_BUFFER)
-        if line.intersects(node_buf):
-            print(f"    [binding] blocked by node {node_id} at {data['pos']}")
 
 def _place_along_ray(
     angle: float,
