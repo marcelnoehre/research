@@ -28,6 +28,27 @@ def _angular_gap_between(a1: float, a2: float) -> float:
     """CCW arc from a1 to a2 in [0, 2pi)."""
     return (a2 - a1) % (2 * math.pi)
 
+def _sort_by_node_angle(
+    assigned: List[int],
+    gap: Dict,
+    centroid: Tuple[float, float],
+    G: nx.Graph,
+    overflow_candidates: Dict[int, OverflowLabel],
+) -> List[int]:
+    """
+    Sort assigned label ids by their node's angle from centroid,
+    within the gap's angular range — so slot order matches node order
+    and binding lines don't cross each other.
+    """
+    a_left = gap["a_left"]
+
+    def node_angle_in_gap(node_id):
+        node_pos = G.nodes[overflow_candidates[node_id].node_id]["pos"]
+        angle = _angle_from_centroid(centroid, node_pos)
+        # Normalise to gap-relative angle so sorting is stable across wrap-around
+        return _angular_gap_between(a_left, angle)
+
+    return sorted(assigned, key=node_angle_in_gap)
 
 def _wedge_polygon(
     centroid: Tuple[float, float],
@@ -249,15 +270,13 @@ def outer_overflow_labels(
     result_map = dict(overflow_candidates)
 
     for gap in gaps:
-        assigned = gap["assigned"]
-        if not assigned:
+        if not gap["assigned"]:
             continue
 
+        assigned = _sort_by_node_angle(gap["assigned"], gap, centroid, G, overflow_candidates)
         n = len(assigned)
-        wedge = gap["wedge"]
 
         for i, node_id in enumerate(assigned):
-            # Even angular spacing: 1 label → centered, N labels → evenly subdivided
             slot_angle = gap["a_left"] + gap["gap_size"] * (i + 1) / (n + 1)
 
             overflow_label = overflow_candidates[node_id]
@@ -269,14 +288,11 @@ def outer_overflow_labels(
                 placed_union, w, h, node_pos,
                 overflow_label.node_id, node_id,
                 G, placed, overflow_candidates,
-                debug=True
             )
 
             if pos is None:
-                print(
-                    f"Warning: could not place overflow label for node {node_id} "
-                    f"in gap ({gap['node_left']}, {gap['node_right']})"
-                )
+                print(f"Warning: could not place overflow label for node {node_id} "
+                      f"in gap ({gap['node_left']}, {gap['node_right']})")
                 continue
 
             new_cx, new_cy, anchor_name, anchor_pt = pos
@@ -290,7 +306,6 @@ def outer_overflow_labels(
             })
 
             placed_union = placed_union.union(_label_bbox_polygon(new_cx, new_cy, w, h))
-
             _update_overflow_label_position(overflow_label, new_cx, new_cy)
             overflow_label.anchor = anchor_name
             result_map[node_id] = overflow_label

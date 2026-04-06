@@ -76,6 +76,12 @@ def _binding_line_valid(
         if line.intersects(_label_bbox_polygon(cx, cy, w, h)):
             return False
 
+        # Check crossing binding lines
+        if "binding_line" in rec and rec["binding_line"] is not None:
+            other_line = rec["binding_line"]
+            if line.crosses(other_line):
+                return False
+
     for node_id, data in G.nodes(data=True):
         if node_id == own_node_id:
             continue
@@ -85,7 +91,6 @@ def _binding_line_valid(
             return False
 
     return True
-
 
 # ---------------------------------------------------------------------------
 # Position search
