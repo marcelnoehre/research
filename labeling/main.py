@@ -292,7 +292,7 @@ plot_lattice(
 ################################################################################
 plot_lattice(
     G, cxt, lattice.nodes, coords,
-    output_path="figs/final.pdf",
+    output_path=f"figs/{FILE}.pdf",
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,

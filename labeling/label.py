@@ -233,6 +233,7 @@ class OverflowLabel:
     label_type: str
     bbox_corners: Tuple[Tuple, Tuple, Tuple, Tuple] # BL, BR, TR, TL
     inner_bbox_corners: Tuple[Tuple, Tuple, Tuple, Tuple] # Ink only
+    expanded_bbox_corners: Tuple[Tuple, Tuple, Tuple, Tuple] # Full visual bbox (padding)
     center: Tuple[float, float]
     anchor: str = 'overflow'
     text: str = ''
@@ -244,9 +245,13 @@ def compute_overflow_label(
     label_type: str,
     padding_x_mm: float = 1.75,
     padding_y_mm: float = 1.75,
+    tight_padding_mm: float = 0.5,
 ) -> OverflowLabel:
     '''
     Creates a centered overflow label for a specific node.
+    bbox_corners        — tight bbox (tight_padding_mm), used for collision
+    inner_bbox_corners  — ink only, no padding
+    expanded_bbox_corners — full visual bbox (padding_x/y_mm), used for rendering
     '''
     if 'normalized_height' not in G.graph:
         raise ValueError("Call normalize_positions(G) before compute.")
@@ -254,30 +259,36 @@ def compute_overflow_label(
     mm_per_unit = PHYSICAL_HEIGHT_MM / G.graph['normalized_height']
     units_per_mm = 1.0 / mm_per_unit
 
-    # 1. Measure Ink
     ink_w_mm, ink_h_mm = measure_ink_mm(label_text, FONT_SIZE)
 
-    # 2. Calculate Dimensions in Graph Units
-    half_w = ((ink_w_mm + 2 * padding_x_mm) * units_per_mm) / 2.0
-    half_h = ((ink_h_mm + 2 * padding_y_mm) * units_per_mm) / 2.0
+    # Ink only
     half_iw = (ink_w_mm * units_per_mm) / 2.0
     half_ih = (ink_h_mm * units_per_mm) / 2.0
 
-    # 3. Position (Defaulting to center of node)
+    # Tight bbox (collision)
+    half_w  = ((ink_w_mm + 2 * tight_padding_mm) * units_per_mm) / 2.0
+    half_h  = ((ink_h_mm + 2 * tight_padding_mm) * units_per_mm) / 2.0
+
+    # Extended bbox (visual)
+    half_ew = ((ink_w_mm + 2 * padding_x_mm) * units_per_mm) / 2.0
+    half_eh = ((ink_h_mm + 2 * padding_y_mm) * units_per_mm) / 2.0
+
     cx, cy = G.nodes[node]['pos']
 
-    # 4. Construct Bounding Boxes
-    bl, br = (cx - half_w, cy - half_h), (cx + half_w, cy - half_h)
-    tr, tl = (cx + half_w, cy + half_h), (cx - half_w, cy + half_h)
-
-    ibl, ibr = (cx - half_iw, cy - half_ih), (cx + half_iw, cy - half_ih)
-    itr, itl = (cx + half_iw, cy + half_ih), (cx - half_iw, cy + half_ih)
+    def corners(hx, hy):
+        return (
+            (cx - hx, cy - hy),  # BL
+            (cx + hx, cy - hy),  # BR
+            (cx + hx, cy + hy),  # TR
+            (cx - hx, cy + hy),  # TL
+        )
 
     return OverflowLabel(
         node_id=node,
         label_type=label_type,
-        bbox_corners=(bl, br, tr, tl),
-        inner_bbox_corners=(ibl, ibr, itr, itl),
+        bbox_corners=corners(half_w, half_h),
+        inner_bbox_corners=corners(half_iw, half_ih),
+        expanded_bbox_corners=corners(half_ew, half_eh),
         center=(cx, cy),
-        text=label_text
+        text=label_text,
     )

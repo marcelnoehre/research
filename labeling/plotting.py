@@ -104,37 +104,18 @@ def _draw_overflow_candidate(
 
         ax.scatter(*anchor_pt, color=colour, s=30, zorder=6, alpha=0.9)
 
+        ebl, ebr, etr, etl = candidate.expanded_bbox_corners
+        ax.add_patch(mpatches.Polygon(
+            [ebl, ebr, etr, etl], closed=True,
+            facecolor='none', edgecolor=colour,
+            alpha=0.55, linestyle=':', linewidth=1.0,
+            zorder=3,
+        ))
+
     if candidate.anchor != 'overflow':
-        outer = candidate.bbox_corners
-        inner = candidate.inner_bbox_corners
-        
-        # helper to interpolate between outer and inner points
-        def get_pt(out_pt, inn_pt, factor):
-            nx = out_pt[0] + (inn_pt[0] - out_pt[0]) * factor
-            ny = out_pt[1] + (inn_pt[1] - out_pt[1]) * factor
-            return (nx, ny)
-
-        c_factor = 1.0 
-        s_factor = 0.5
-
-        anchor_lookup = {
-            'bottom_left':  get_pt(outer[0], inner[0], c_factor),
-            'bottom_right': get_pt(outer[1], inner[1], c_factor),
-            'top_right':    get_pt(outer[2], inner[2], c_factor),
-            'top_left':     get_pt(outer[3], inner[3], c_factor),
-            'bottom':       get_pt(((outer[0][0]+outer[1][0])/2, outer[0][1]), ((inner[0][0]+inner[1][0])/2, inner[1][1]), s_factor),
-            'top':          get_pt(((outer[3][0]+outer[2][0])/2, outer[3][1]), ((inner[3][0]+inner[2][0])/2, inner[3][1]), s_factor),
-            'left':         get_pt((outer[0][0], (outer[0][1]+outer[3][1])/2), (inner[0][0], (inner[0][1]+inner[3][1])/2), s_factor),
-            'right':        get_pt((outer[1][0], (outer[1][1]+outer[2][1])/2), (inner[1][0], (inner[1][1]+inner[2][1])/2), s_factor),
-        }
-
-        ix, iy = anchor_lookup[candidate.anchor]
-
-        ax.scatter(ix, iy, color='grey', s=15, zorder=6, alpha=0.8)
-
+        ax.scatter(*anchor_pt, color='grey', s=15, zorder=6, alpha=0.8)
         nx, ny = G.nodes[candidate.node_id]['pos']
-        
-        ax.plot([ix, nx], [iy, ny], color='grey', linestyle='--', linewidth=0.5, alpha=0.4, zorder=4)
+        ax.plot([anchor_pt[0], nx], [anchor_pt[1], ny], color='grey', linestyle='--', linewidth=0.5, alpha=0.4, zorder=4)
 
     text_color = colour if colored_label_candidates else 'black'
     cx, cy = candidate.center
