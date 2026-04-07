@@ -114,6 +114,7 @@ def _place_along_ray(
     G: nx.Graph,
     placed: List[dict],
     overflow_candidates: Dict[int, OverflowLabel],
+    label_candidates: Dict[int, List[LabelCandidate]],
     debug: bool = False,
 ) -> Optional[Tuple[float, float, str, Tuple]]:
     cx, cy = centroid
@@ -206,7 +207,7 @@ def _place_along_ray(
         for anchor_name in sorted_anchors:
             anchor_pt = _anchor_point_from_bbox(anchor_name, candidate_bbox, candidate_inner)
             line = LineString([anchor_pt, node_pos])
-            if _binding_line_valid(line, own_node_id, own_label_id, G, placed, overflow_candidates):
+            if _binding_line_valid(line, own_node_id, own_label_id, G, placed, overflow_candidates, label_candidates):
                 return origin_x, origin_y, anchor_name, anchor_pt
             found = False
 
@@ -329,6 +330,7 @@ def outer_overflow_labels(
                 placed_union, w, h, node_pos,
                 overflow_label.node_id, node_id,
                 G, placed, overflow_candidates,
+                label_candidates
             )
 
             if pos is None:
@@ -338,7 +340,7 @@ def outer_overflow_labels(
                     placed_union, w, h, node_pos,
                     overflow_label.node_id, node_id,
                     G, placed, overflow_candidates,
-                    debug=True,
+                    label_candidates, debug=True,
                 )
                 print(f"Warning: could not place overflow label for node {node_id} "
                       f"in gap ({gap['node_left']}, {gap['node_right']})")

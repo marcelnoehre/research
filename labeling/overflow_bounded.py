@@ -114,6 +114,7 @@ def _binding_line_valid(
     G: nx.Graph,
     placed: List[dict],
     overflow_candidates: Dict[int, OverflowLabel],
+    label_candidates: Dict[int, List[LabelCandidate]],
 ) -> bool:
     for rec in placed:
         if rec["label_id"] == own_label_id:
@@ -124,6 +125,12 @@ def _binding_line_valid(
             return False
         if "binding_line" in rec and rec["binding_line"] is not None:
             if line.crosses(rec["binding_line"]):
+                return False
+    
+    for candidates in label_candidates.values():
+        for cand in candidates:
+            cand_poly = Polygon(cand.bbox_corners).buffer(0)
+            if line.intersects(cand_poly):
                 return False
 
     for node_id, data in G.nodes(data=True):
@@ -151,6 +158,7 @@ def _find_valid_position(
     G: nx.Graph,
     placed: List[dict],
     overflow_candidates: Dict[int, OverflowLabel],
+    label_candidates: Dict[int, List[LabelCandidate]],
 ) -> Optional[Tuple[float, float, str, Tuple]]:
     """
     Find the valid center position inside the eroded space that is closest
@@ -271,7 +279,7 @@ def _find_valid_position(
         for anchor_name in sorted_anchors:
             anchor_pt = _anchor_point_from_bbox(anchor_name, candidate_bbox, candidate_inner)
             line = LineString([anchor_pt, node_pos])
-            if _binding_line_valid(line, own_node_id, own_label_id, G, placed, overflow_candidates):
+            if _binding_line_valid(line, own_node_id, own_label_id, G, placed, overflow_candidates, label_candidates):
                 return cx, cy, anchor_name, anchor_pt
 
     return None
@@ -303,6 +311,7 @@ def _compute_results(
 def place_inner_overflow_labels(
     G: nx.Graph,
     overflow_candidates: Dict[int, OverflowLabel],
+    label_candidates: Dict[int, List[LabelCandidate]],
     results: Dict[int, List[int]],
     processed_faces: List[Tuple],
     centers: List[Tuple],
@@ -363,7 +372,7 @@ def place_inner_overflow_labels(
 
         result = _find_valid_position(
             space, w, h, node_pos, label.node_id, chosen_label,
-            G, placed, overflow_candidates,
+            G, placed, overflow_candidates, label_candidates
         )
 
         if result is None:
@@ -477,7 +486,7 @@ def inner_overflow_labels(
 
     # 4. Greedy inner placement
     placements = place_inner_overflow_labels(
-        G, overflow_candidates, results, processed_faces, centers
+        G, overflow_candidates, label_candidates, results, processed_faces, centers
     )
 
     # 5. Update overflow_candidates with final positions
