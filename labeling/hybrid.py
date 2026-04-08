@@ -1,12 +1,12 @@
 from label import LabelCandidate
 from typing import Dict, List, Optional, Set, Tuple
 
-def _inner_boxes_overlap(a: LabelCandidate, b: LabelCandidate) -> bool:
+def _boxes_overlap(a: LabelCandidate, b: LabelCandidate) -> bool:
     '''
     True iff the ink (inner) bounding boxes of two candidates intersect.
     '''
-    (ax0, ay0), _, (ax1, ay1), _ = a.inner_bbox_corners   # BL, BR, TR, TL
-    (bx0, by0), _, (bx1, by1), _ = b.inner_bbox_corners
+    (ax0, ay0), _, (ax1, ay1), _ = a.bbox_corners   # BL, BR, TR, TL
+    (bx0, by0), _, (bx1, by1), _ = b.bbox_corners
     # touching is not a conflict
     return ax0 < bx1 and ax1 > bx0 and ay0 < by1 and ay1 > by0
 
@@ -63,7 +63,7 @@ def _build_conflict_index(
             # same feature - never a conflict
             if (ni, lti) == (nj, ltj):
                 continue
-            if _inner_boxes_overlap(ca, cb):
+            if _boxes_overlap(ca, cb):
                 conflicts[cki].append(ckj)
                 conflicts[ckj].append(cki)
 
@@ -177,7 +177,7 @@ def _apply_L3(typed, active, chosen, conflicts, log) -> bool:
         ck = (nid, lt, ci)
         live = _live_conflicts(ck, conflicts, active, chosen)
         is_clique = all(
-            _inner_boxes_overlap(
+            _boxes_overlap(
                 typed[(live[a][0], live[a][1])][live[a][2]],
                 typed[(live[b][0], live[b][1])][live[b][2]],
             )
@@ -232,7 +232,7 @@ def _is_clique_keys(
         for j in range(i + 1, len(keys)):
             ni, lti, ci = keys[i]
             nj, ltj, cj = keys[j]
-            if not _inner_boxes_overlap(typed[(ni, lti)][ci], typed[(nj, ltj)][cj]):
+            if not _boxes_overlap(typed[(ni, lti)][ci], typed[(nj, ltj)][cj]):
                 return False
     return True
 
@@ -428,37 +428,46 @@ def hybrid_label_placement(
             if fk not in feature_to_clique:
                 log.append(f'  ({fk[0]},{fk[1]}) - UNLABELED (unmatched)')
 
-    # Build result map (node_id - list of chosen candidates
+    # Build result map (node_id - list of chosen candidates)
+    # `placed` accumulates every label committed so far (Phase I + II + fallback)
+    # so that every subsequent placement is checked against the full placed set.
     chosen_map: Dict[int, List[LabelCandidate]] = {
         nid: [] for nid in candidates
     }
+    placed: List[LabelCandidate] = []
+
+    # First pass: commit Phase I / II decisions, verifying against placed so far.
     for (nid, lt), cands in typed.items():
         ci = chosen[(nid, lt)]
-        if ci is not None and ci < len(cands):
-            chosen_map[nid].append(cands[ci])
+        if ci is None or ci >= len(cands):
+            continue
+        c = cands[ci]
+        if not any(_boxes_overlap(c, p) for p in placed):
+            chosen_map[nid].append(c)
+            placed.append(c)
         else:
-            # if exactly one active candidate remains and it doesn't overlap any *chosen* candidate
-            active_cands = [
-                (i, c) for i, c in enumerate(cands) if active[(nid, lt, i)]
-            ]
-            if len(active_cands) == 1:
-                sole_i, sole_c = active_cands[0]
-                # Build the set of chosen candidates from other features
-                chosen_candidates = [
-                    typed[ofk][oci]
-                    for ofk, oci in chosen.items()
-                    if oci is not None and ofk != (nid, lt)
-                ]
-                overlaps_chosen = any(
-                    _inner_boxes_overlap(sole_c, other)
-                    for other in chosen_candidates
+            # Clear the decision so the fallback pass can try other active candidates.
+            chosen[(nid, lt)] = None
+            log.append(
+                f'  WARNING ({nid},{lt}) cand {ci} skipped '
+                f'(overlaps an already-placed label)'
+            )
+
+    # Second pass: fallback for features still unresolved.
+    for (nid, lt), cands in typed.items():
+        if chosen[(nid, lt)] is not None:
+            continue
+        for sole_i, sole_c in (
+            (i, c) for i, c in enumerate(cands) if active[(nid, lt, i)]
+        ):
+            if not any(_boxes_overlap(sole_c, p) for p in placed):
+                chosen_map[nid].append(sole_c)
+                placed.append(sole_c)
+                log.append(
+                    f'  fallback ({nid},{lt}) cand {sole_i} → chosen '
+                    f'(no overlap with placed labels)'
                 )
-                if not overlaps_chosen:
-                    chosen_map[nid].append(sole_c)
-                    log.append(
-                        f'  fallback ({nid},{lt}) cand {sole_i} → chosen '
-                        f'(sole active, no overlap with chosen labels)'
-                    )
+                break
 
     n_extent  = sum(1 for lst in chosen_map.values() for c in lst if c.label_type == 'extent')
     n_intent  = sum(1 for lst in chosen_map.values() for c in lst if c.label_type == 'intent')
