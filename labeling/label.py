@@ -148,46 +148,13 @@ def compute_label_candidates(
     ink_w_mm, ink_h_mm = measure_ink_mm(label_text, font_size)
 
     # padding
-    padding = ink_h_mm
+    padding = ink_h_mm * 0.75
 
     # Inner half-extents (ink only, no padding)
     half_iw = (ink_w_mm  * units_per_mm) / 2.0
     half_ih = (ink_h_mm  * units_per_mm) / 2.0
 
     corner_multiplier = 1 / np.sqrt(2)
-    anchor_padding_scales = {
-        'top': 1.0, 'bottom': 1.0, 'left': 1.0, 'right': 1.0,
-        'top_left': corner_multiplier, 
-        'top_right': corner_multiplier,
-        'bottom_left': corner_multiplier, 
-        'bottom_right': corner_multiplier
-    }
-    anchor_extents: Dict[str, Tuple[float, float]] = {}
-
-    for anchor in allowed_anchors:
-        scale = anchor_padding_scales[anchor]
-        
-        # Scale the padding specifically for this anchor type
-        p_x = padding * scale
-        p_y = padding * scale
-        
-        # Calculate outer dimensions with dampened padding
-        o_w_units = (ink_w_mm + 2 * p_x) * units_per_mm
-        o_h_units = (ink_h_mm + 2 * p_y) * units_per_mm
-        
-        anchor_extents[anchor] = (o_w_units / 2.0, o_h_units / 2.0)
-
-    anchor_offsets: Dict[str, Tuple[float, float]] = {
-        'top':          (0.0, -anchor_extents['top'][1]),
-        'bottom':       (0.0,  anchor_extents['bottom'][1]),
-        'left':         ( anchor_extents['left'][0], 0.0),
-        'right':        (-anchor_extents['right'][0], 0.0),
-        
-        'top_left':     ( anchor_extents['top_left'][0],     -anchor_extents['top_left'][1]),
-        'top_right':    (-anchor_extents['top_right'][0],    -anchor_extents['top_right'][1]),
-        'bottom_left':  ( anchor_extents['bottom_left'][0],   anchor_extents['bottom_left'][1]),
-        'bottom_right': (-anchor_extents['bottom_right'][0],  anchor_extents['bottom_right'][1])
-    }
 
     candidates: Dict[int, List[LabelCandidate]] = {}
 
@@ -195,57 +162,67 @@ def compute_label_candidates(
         node_x, node_y = G.nodes[node]['pos']
         node_candidates: List[LabelCandidate] = []
         
-        for anchor, (dx, dy) in anchor_offsets.items():
-            if anchor not in allowed_anchors:
-                continue
+        for anchor in allowed_anchors:
+            is_top    = 'top' in anchor
+            is_bottom = 'bottom' in anchor
+            is_left   = 'left' in anchor
+            is_right  = 'right' in anchor
+            is_corner = '_' in anchor
+
+            # visually closer corner
+            s = corner_multiplier if is_corner else (1.0 / corner_multiplier)
+
+            p_top    = (padding * s) if is_top else padding
+            p_bottom = (padding * s) if is_bottom else padding
+            p_left   = (padding * s) if is_left else padding
+            p_right  = (padding * s) if is_right else padding
+
+            total_w_units = (ink_w_mm + p_left + p_right) * units_per_mm
+            total_h_units = (ink_h_mm + p_top + p_bottom) * units_per_mm
+
+            half_w = total_w_units / 2.0
+            half_h = total_h_units / 2.0
+
+            offset_x = 0
+            if is_left:  offset_x = half_w   # Box moves right, so left edge touches node
+            if is_right: offset_x = -half_w  # Box moves left, so right edge touches node
             
-            current_half_w, current_half_h = anchor_extents[anchor]
+            offset_y = 0
+            if is_top:    offset_y = -half_h # Box moves down, so top edge touches node
+            if is_bottom: offset_y = half_h  # Box moves up, so bottom edge touches node
+
+            cx = node_x + offset_x
+            cy = node_y + offset_y
+
+            # 5. Define Bounding Boxes
+            bl = (cx - half_w, cy - half_h)
+            tr = (cx + half_w, cy + half_h)
+            br, tl = (tr[0], bl[1]), (bl[0], tr[1])
+
+            # Inner ink stays centered within the box relative to its specific padding
+            # Ink center = Box center shifted by the difference in padding
+            ink_cx = cx + ((p_left - p_right) * units_per_mm / 2.0)
+            ink_cy = cy + ((p_bottom - p_top) * units_per_mm / 2.0)
             
-            cx = node_x + dx
-            cy = node_y + dy
+            ibl = (ink_cx - half_iw, ink_cy - half_ih)
+            itr = (ink_cx + half_iw, ink_cy + half_ih)
+            ibr, itl = (itr[0], ibl[1]), (ibl[0], itr[1])
 
-            # Now the bbox corners match the adjusted padding
-            bl = (cx - current_half_w,  cy - current_half_h)
-            br = (cx + current_half_w,  cy - current_half_h)
-            tr = (cx + current_half_w,  cy + current_half_h)
-            tl = (cx - current_half_w,  cy + current_half_h)
+            # 6. Expanded Collision (Only expand outward from the node)
+            exp_l = (padding * units_per_mm) if not is_left else 0
+            exp_r = (padding * units_per_mm) if not is_right else 0
+            exp_t = (padding * units_per_mm) if not is_top else 0
+            exp_b = (padding * units_per_mm) if not is_bottom else 0
 
-            # Inner ink stays the same (half_iw/half_ih are global)
-            ibl = (cx - half_iw, cy - half_ih)
-            ibr = (cx + half_iw, cy - half_ih)
-            itr = (cx + half_iw, cy + half_ih)
-            itl = (cx - half_iw, cy + half_ih)
-
-            # --- FIX 2: Recalculate expansion factors based on the current anchor's padding ---
-            # This ensures the 'expanded' collision box shrinks along with the visual box
-            current_scale = anchor_padding_scales[anchor]
-            cur_exp_x = (padding * current_scale * units_per_mm)
-            cur_exp_y = (padding * current_scale * units_per_mm)
-
-            # Map the local expansion factors
-            _cur_expand = {
-                'top': (cur_exp_x, cur_exp_x, cur_exp_y, 0),
-                'bottom': (cur_exp_x, cur_exp_x, 0, cur_exp_y),
-                'left': (0, cur_exp_x, cur_exp_y, cur_exp_y),
-                'right': (cur_exp_x, 0, cur_exp_y, cur_exp_y),
-                'bottom_right': (cur_exp_x, 0, 0, cur_exp_y),
-                'bottom_left': (0, cur_exp_x, 0, cur_exp_y),
-                'top_right': (cur_exp_x, 0, cur_exp_y, 0),
-                'top_left': (0, cur_exp_x, cur_exp_y, 0)
-            }
-            
-            dl, dr, db, dt = _cur_expand[anchor]
-            ebl = (bl[0] - dl, bl[1] - db)
-            etr = (tr[0] + dr, tr[1] + dt)
-            ebr = (etr[0], ebl[1])
-            etl = (ebl[0], etr[1])
+            ebl = (bl[0] - exp_l, bl[1] - exp_b)
+            etr = (tr[0] + exp_r, tr[1] + exp_t)
 
             node_candidates.append(LabelCandidate(
                 anchor=anchor,
                 label_type=label_type,
                 bbox_corners=(bl, br, tr, tl),
                 inner_bbox_corners=(ibl, ibr, itr, itl),
-                expanded_bbox_corners=(ebl, ebr, etr, etl),
+                expanded_bbox_corners=(ebl, (etr[0], ebl[1]), etr, (ebl[0], etr[1])),
                 center=(cx, cy),
             ))
 
@@ -273,10 +250,7 @@ def compute_overflow_label(
     G: nx.Graph,
     node: int,
     label_text: str,
-    label_type: str,
-    padding_x_mm: float = 1.5,
-    padding_y_mm: float = 1.5,
-    scaling_intensity: float = 0.25
+    label_type: str
 ) -> OverflowLabel:
     '''
     Creates a centered overflow label for a specific node.
@@ -294,7 +268,7 @@ def compute_overflow_label(
     ink_w_mm, ink_h_mm = measure_ink_mm(label_text, font_size)
 
     # padding
-    padding = ink_h_mm
+    padding = ink_h_mm * 0.5
 
     # Ink only
     half_iw = (ink_w_mm * units_per_mm) / 2.0
