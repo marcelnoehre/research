@@ -19,6 +19,7 @@ from overflow_bounded import (
 OUTER_STEP = 0.5
 OUTER_MAX_STEPS = 500
 WEDGE_RADIUS = 1e4
+OUTER_CANDIDATE_POOL = 12
 
 
 def _angle_from_centroid(centroid: Tuple[float, float], point: Tuple[float, float]) -> float:
@@ -70,34 +71,23 @@ def _wedge_polygon(
     return wedge.difference(outer_polygon)
 
 
-def _binding_line_debug(
-    line: LineString,
-    own_node_id: int,
-    own_label_id: int,
-    G: nx.Graph,
-    placed: List[dict],
-    overflow_candidates: Dict[int, OverflowLabel],
-) -> None:
-    """Log exactly what blocks this binding line."""
-    for rec in placed:
-        if rec["label_id"] == own_label_id:
-            continue
-        cx, cy = rec["position"]
-        w, h = _label_wh_expanded(overflow_candidates[rec["label_id"]])
-        bbox = _label_bbox_polygon(cx, cy, w, h)
-        if line.intersects(bbox):
-            print(f"    [binding] blocked by placed label {rec['label_id']} at {rec['position']}")
-        if "binding_line" in rec and rec["binding_line"] is not None:
-            if line.crosses(rec["binding_line"]):
-                print(f"    [binding] crosses binding line of label {rec['label_id']}")
-
-    for node_id, data in G.nodes(data=True):
-        if node_id == own_node_id:
-            continue
-        if not isinstance(node_id, int):
-            continue
-        if line.distance(Point(data["pos"])) < 1e-6:
-            print(f"    [binding] blocked by node {node_id} at {data['pos']}")
+def _score_candidate(
+    origin_x: float,
+    origin_y: float,
+    anchor_pt: Tuple[float, float],
+    node_pos: Tuple[float, float],
+    centroid: Tuple[float, float],
+    slot_angle: float,
+) -> float:
+    """
+    Lower score = better placement.
+    Primary:   binding line length (label close to its node).
+    Secondary: angular deviation of label center from the slot ray.
+    """
+    binding_length = math.hypot(anchor_pt[0] - node_pos[0], anchor_pt[1] - node_pos[1])
+    label_angle = _angle_from_centroid(centroid, (origin_x, origin_y))
+    angle_dev = abs(math.sin(_angular_gap_between(slot_angle, label_angle)))  # ~angular error
+    return binding_length + 5.0 * angle_dev
 
 
 def _place_along_ray(
@@ -149,6 +139,10 @@ def _place_along_ray(
     else:
         exit_dist = math.hypot(intersection.x - cx, intersection.y - cy)
 
+    # Start a few steps before the polygon boundary so the tight-bbox check
+    # finds the true minimum clearance rather than assuming exit_dist is enough.
+    start_dist = max(0.0, exit_dist - OUTER_STEP * 4)
+
     fail_outer = 0
     fail_placed_union = 0
     fail_placed_bboxes = 0
@@ -156,8 +150,14 @@ def _place_along_ray(
     fail_binding = 0
     best_binding_fallback: Optional[Tuple[float, float, str, Tuple]] = None
 
+    # Collect a pool of valid candidates, then pick the best-scoring one.
+    candidates: List[Tuple[float, float, float, str, Tuple]] = []  # (score, ox, oy, anchor_name, anchor_pt)
+
     for step in range(OUTER_MAX_STEPS):
-        dist = exit_dist + OUTER_STEP * step
+        if len(candidates) >= OUTER_CANDIDATE_POOL:
+            break
+
+        dist = start_dist + OUTER_STEP * step
         origin_x = cx + dx * dist
         origin_y = cy + dy * dist
 
@@ -180,24 +180,13 @@ def _place_along_ray(
             fail_node_in_bbox += 1
             continue
 
-        # Tight bbox corners for anchor interpolation
-        candidate_bbox = (
-            (origin_x - hw, origin_y - hh),
-            (origin_x + hw, origin_y - hh),
-            (origin_x + hw, origin_y + hh),
-            (origin_x - hw, origin_y + hh),
-        )
-        candidate_inner = (
-            (origin_x - half_iw, origin_y - half_ih),
-            (origin_x + half_iw, origin_y - half_ih),
-            (origin_x + half_iw, origin_y + half_ih),
-            (origin_x - half_iw, origin_y + half_ih),
-        )
+        # Tight bbox for self-crossing anchor check
+        own_tight_bbox = _label_bbox_polygon(origin_x, origin_y, w, h)
 
         # 1. Compute the real geometric anchors once
         anchors = _anchor_points(origin_x, origin_y, w, h)
 
-        # 2. Sort the keys (names) based on the distance from their real coords to node_pt
+        # 2. Sort anchors by distance from their coords to node_pt
         sorted_anchors = sorted(
             anchors.keys(),
             key=lambda name: np.hypot(
@@ -206,32 +195,50 @@ def _place_along_ray(
             )
         )
 
-        found = False
+        position_valid = False
         for anchor_name in sorted_anchors:
             anchor_pt = anchors[anchor_name]
             line = LineString([anchor_pt, node_pos])
-            
+
+            # Reject if the binding line doubles back through our own label body.
+            line_beyond = line.difference(own_tight_bbox.boundary)
+            if line_beyond.intersects(own_tight_bbox):
+                continue
+
             if _binding_line_valid(line, own_node_id, own_label_id, G, placed, overflow_candidates, label_candidates):
-                return origin_x, origin_y, anchor_name, anchor_pt
-            
-        # No valid binding was found
-        if not found:
+                score = _score_candidate(origin_x, origin_y, anchor_pt, node_pos, centroid, angle)
+                candidates.append((score, origin_x, origin_y, anchor_name, anchor_pt))
+                position_valid = True
+                break  # one anchor per position is enough; we'll compare positions by score
+
+        if not position_valid:
+            # Record a non-self-crossing fallback in case we find nothing fully valid
             if best_binding_fallback is None:
-                # Closest anchor as the fallback
-                best_anchor_name = sorted_anchors[0]
-                best_anchor_pt = anchors[best_anchor_name]
-                best_binding_fallback = (origin_x, origin_y, best_anchor_name, best_anchor_pt)
-                
+                for name in sorted_anchors:
+                    pt = anchors[name]
+                    l = LineString([pt, node_pos])
+                    beyond = l.difference(own_tight_bbox.boundary)
+                    if not beyond.intersects(own_tight_bbox):
+                        best_binding_fallback = (origin_x, origin_y, name, pt)
+                        break
+                if best_binding_fallback is None:
+                    name = sorted_anchors[0]
+                    best_binding_fallback = (origin_x, origin_y, name, anchors[name])
+
                 if debug:
-                    fallback_line = LineString([best_anchor_pt, node_pos])
+                    fb_anchor_pt = best_binding_fallback[3]
+                    fallback_line = LineString([fb_anchor_pt, node_pos])
                     print(f"    [binding] label_center=({origin_x:.2f},{origin_y:.2f}) "
-                        f"anchor_pt={best_anchor_pt} node_pos={node_pos}")
+                          f"anchor_pt={fb_anchor_pt} node_pos={node_pos}")
                     print(f"    [binding] line: {list(fallback_line.coords)}")
-                    _binding_line_debug(
-                        fallback_line, own_node_id, own_label_id,
-                        G, placed, overflow_candidates,
-                    )
+
             fail_binding += 1
+
+    if candidates:
+        # Pick the candidate with the lowest score
+        candidates.sort(key=lambda c: c[0])
+        _, best_x, best_y, best_anchor, best_anchor_pt = candidates[0]
+        return best_x, best_y, best_anchor, best_anchor_pt
 
     if debug:
         print(

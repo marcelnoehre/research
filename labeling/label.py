@@ -119,9 +119,6 @@ def compute_label_candidates(
     label_text         : the label string (used to measure ink size)
     physical_height_mm : actual drawing height in mm (sets the unit scale)
     label_type         : 'extent' only top anchors, 'intent' only bottom anchors
-    padding_x_mm       : horizontal padding around the ink box
-    padding_y_mm       : vertical padding around the ink box
-    fontsize_pt        : font size in points
 
     Returns
     -------
@@ -268,7 +265,9 @@ def compute_overflow_label(
     ink_w_mm, ink_h_mm = measure_ink_mm(label_text, font_size)
 
     # padding
-    padding = ink_h_mm * 0.5
+    corner_multiplier = 1 / np.sqrt(2)
+    s = (1.0 / corner_multiplier)
+    padding = ink_h_mm * 0.75
 
     # Ink only
     half_iw = (ink_w_mm * units_per_mm) / 2.0
@@ -279,8 +278,8 @@ def compute_overflow_label(
     half_h  = ((ink_h_mm + 2 * padding / 3) * units_per_mm) / 2.0
 
     # Extended bbox (visual)
-    half_ew = ((ink_w_mm + 2 * padding) * units_per_mm) / 2.0
-    half_eh = ((ink_h_mm + 2 * padding) * units_per_mm) / 2.0
+    half_ew = ((ink_w_mm + 2 * padding * s) * units_per_mm) / 2.0
+    half_eh = ((ink_h_mm + 2 * padding * s) * units_per_mm) / 2.0
 
     cx, cy = G.nodes[node]['pos']
 
