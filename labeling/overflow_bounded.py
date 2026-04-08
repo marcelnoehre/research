@@ -485,6 +485,6 @@ def inner_overflow_labels(
         if label_id in placement_by_id:
             cx, cy = placement_by_id[label_id]['position']
             anchor = placement_by_id[label_id]['anchor']
-            _update_overflow_label_position(label, cx, cy, anchor)
+            update_overflow_label_position(label, cx, cy, anchor)
 
     return overflow_candidates
