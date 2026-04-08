@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple
 from fcapy.context import FormalContext
 
 from fca.lattice import Lattice
-from label import LabelCandidate, OverflowLabel
+from label import DPI, LabelCandidate, OverflowLabel
 
 _ANCHOR_COLOURS = {
     'top_left':     '#d62728',   # tab:red
@@ -28,10 +28,17 @@ def _draw_candidate(
         fontsize_pt: float,
         colored_label_candidates: bool = False
 ):
+    ibl, ibr, itr, itl = candidate.inner_bbox_corners
     bl, br, tr, tl = candidate.bbox_corners
     colour = _ANCHOR_COLOURS[candidate.anchor]
 
     if colored_label_candidates:
+        ax.add_patch(mpatches.Polygon(
+            [ibl, ibr, itr, itl], closed=True,
+            facecolor='none', edgecolor=colour,
+            alpha=0.9, linestyle='-', linewidth=0.8,
+            zorder=4,
+        ))
         ax.add_patch(mpatches.Polygon(
             [bl, br, tr, tl], closed=True,
             facecolor=colour, edgecolor=colour,
@@ -58,7 +65,7 @@ def _draw_candidate(
             'bottom_left':  bl,
             'bottom_right': br,
         }[candidate.anchor]
-        ax.scatter(*anchor_pt, color=colour, s=30, zorder=6, alpha=0.9)
+        ax.scatter(*anchor_pt, color=colour, s=30, zorder=10, alpha=0.9)
 
     text_color = colour if colored_label_candidates else 'black'
     cx, cy = candidate.center
@@ -79,6 +86,7 @@ def _draw_overflow_candidate(
         fontsize_pt: float,
         colored_label_candidates: bool = False
 ):
+    ibl, ibr, itr, itl = candidate.inner_bbox_corners
     bl, br, tr, tl = candidate.bbox_corners
     colour = '#17becf' # tab:cyan
     # Anchor dot — full size for chosen, tiny for rejected
@@ -95,6 +103,12 @@ def _draw_overflow_candidate(
     }[candidate.anchor]
 
     if colored_label_candidates:
+        ax.add_patch(mpatches.Polygon(
+            [ibl, ibr, itr, itl], closed=True,
+            facecolor='none', edgecolor=colour,
+            alpha=0.9, linestyle='-', linewidth=0.8,
+            zorder=4,
+        ))
         ax.add_patch(mpatches.Polygon(
             [bl, br, tr, tl], closed=True,
             facecolor=colour, edgecolor=colour,
@@ -129,24 +143,6 @@ def _draw_overflow_candidate(
         zorder=7,
     )
 
-def _add_inner_boxes(ax, fig, text_colour_pairs: list) -> None:
-    '''
-    '''
-    renderer = fig.canvas.get_renderer()
-    inv = ax.transData.inverted()
-    for txt, colour in text_colour_pairs:
-        bb = txt.get_tightbbox(renderer=renderer)
-        if bb is None:
-            continue
-        (x0, y0), (x1, y1) = inv.transform([(bb.x0, bb.y0), (bb.x1, bb.y1)])
-        ax.add_patch(mpatches.FancyBboxPatch(
-            (x0, y0), x1 - x0, y1 - y0,
-            boxstyle='square,pad=0',
-            facecolor='none', edgecolor=colour,
-            alpha=0.9, linestyle='-', linewidth=0.8,
-            zorder=4,
-        ))
-
 def plot_lattice(
         G: nx.Graph,
         context: FormalContext,
@@ -166,7 +162,7 @@ def plot_lattice(
         show_face_sizes: bool = False,
         label_candidates: Dict = {},
         label_texts: Dict = {},
-        fontsize_pt: float = matplotlib.rcParams.get('font.size', 10.0),
+        fontsize_pt: float = 10.0,
         show_label_candidates: bool = False,
         colored_label_candidates: bool = False,
         overflow_labels: Dict = {},
@@ -179,6 +175,8 @@ def plot_lattice(
     ----------
     TODO: Description of parameters
     '''
+    NODE_SIZE = 50
+    LINE_WIDTH = 1.0
     cmap = cm.YlOrRd
 
     def _pos(node):
@@ -186,14 +184,15 @@ def plot_lattice(
             return G.nodes[node]['pos']
         return coordinates[node]
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(8, 6), dpi=DPI)
+
     fig.canvas.manager.set_window_title(title)
 
     ##### vertices #####
     for concept in concepts:
         x, y = _pos(concept)
         ax.scatter(x, y, facecolor='white', edgecolor='black',
-                   linewidth=2.5, s=150, zorder=8)
+                   linewidth=LINE_WIDTH, s=NODE_SIZE, zorder=8)
         if show_vertex_ids:
             ax.annotate(
                 concept,
@@ -205,7 +204,7 @@ def plot_lattice(
     for i, j in Lattice(context).cover_relations():
         x0, y0 = _pos(i)
         x1, y1 = _pos(j)
-        ax.plot([x0, x1], [y0, y1], color='black', linewidth=2.5, zorder=2)
+        ax.plot([x0, x1], [y0, y1], color='black', linewidth=LINE_WIDTH, zorder=2)
 
     ##### intersection markers #####
     if show_intersections:
@@ -214,9 +213,9 @@ def plot_lattice(
                 pt[0], pt[1], 
                 facecolor='white', 
                 edgecolor='tab:red', 
-                linewidth=2.5, 
-                s=150,        # Matched vertex size (150)
-                zorder=10     # Kept high zorder to stay on top
+                linewidth=LINE_WIDTH, 
+                s=NODE_SIZE, 
+                zorder=10
             )
 
     ##### faces #####
@@ -272,10 +271,5 @@ def plot_lattice(
     ax.set_aspect('equal')
     ax.axis('off')
     plt.tight_layout()
-
-    fig.canvas.draw()
-    if colored_label_candidates and text_colour_pairs:
-        _add_inner_boxes(ax, fig, text_colour_pairs)
-
     plt.savefig(output_path, format="pdf", bbox_inches='tight')
     plt.close(fig)

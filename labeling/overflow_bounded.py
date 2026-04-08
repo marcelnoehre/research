@@ -409,39 +409,61 @@ def place_inner_overflow_labels(
 # Update overflow candidates with final positions
 # ---------------------------------------------------------------------------
 
-def _update_overflow_label_position(label: OverflowLabel, cx: float, cy: float):
+def _update_overflow_label_position(label: OverflowLabel, cx: float, cy: float, anchor: str):
     """Shift bbox, inner_bbox and expanded_bbox corners to a new center (cx, cy)."""
-    bl, br, tr, tl = label.bbox_corners
-    half_w = (br[0] - bl[0]) / 2
-    half_h = (tl[1] - bl[1]) / 2
+    scale = (1 / np.sqrt(2)) if '_' in anchor else 1.0
 
+    # 2. Get the INK dimensions (these never change)
     ibl, ibr, itr, itl = label.inner_bbox_corners
-    half_iw = (ibr[0] - ibl[0]) / 2
-    half_ih = (itl[1] - ibl[1]) / 2
+    half_iw = (ibr[0] - ibl[0]) / 2.0
+    half_ih = (itl[1] - ibl[1]) / 2.0
 
+    # 3. Get the original PADDING from the existing expanded bbox
+    # (Expanded Width - Ink Width) / 2 = Original Padding in graph units
     ebl, ebr, etr, etl = label.expanded_bbox_corners
-    half_ew = (ebr[0] - ebl[0]) / 2
-    half_eh = (etl[1] - ebl[1]) / 2
+    orig_px = ((ebr[0] - ebl[0]) / 2.0) - half_iw
+    orig_py = ((etl[1] - ebl[1]) / 2.0) - half_ih
 
+    # 4. Apply the scale to the padding
+    adj_px = orig_px * scale
+    adj_py = orig_py * scale
+
+    # 5. Calculate new half-extents for Visual (Expanded) and Collision (BBox)
+    # We maintain your 2/3 ratio for the collision bbox
+    half_ew = half_iw + adj_px
+    half_eh = half_ih + adj_py
+    
+    half_w = half_iw + (adj_px * (2/3))
+    half_h = half_ih + (adj_py * (2/3))
+
+    # 6. Apply to the label
     label.center = (cx, cy)
+    
+    # Visual Box (Expanded)
+    label.expanded_bbox_corners = (
+        (cx - half_ew,  cy - half_eh),
+        (cx + half_ew,  cy - half_eh),
+        (cx + half_ew,  cy + half_eh),
+        (cx - half_ew,  cy + half_eh),
+    )
+    
+    # Collision Box (Tight)
     label.bbox_corners = (
         (cx - half_w,  cy - half_h),
         (cx + half_w,  cy - half_h),
         (cx + half_w,  cy + half_h),
         (cx - half_w,  cy + half_h),
     )
+    
+    # Ink Box (Shifted center, dimensions unchanged)
     label.inner_bbox_corners = (
         (cx - half_iw, cy - half_ih),
         (cx + half_iw, cy - half_ih),
         (cx + half_iw, cy + half_ih),
         (cx - half_iw, cy + half_ih),
     )
-    label.expanded_bbox_corners = (
-        (cx - half_ew, cy - half_eh),
-        (cx + half_ew, cy - half_eh),
-        (cx + half_ew, cy + half_eh),
-        (cx - half_ew, cy + half_eh),
-    )
+
+    label.anchor = anchor
 
 
 # ---------------------------------------------------------------------------
@@ -494,7 +516,7 @@ def inner_overflow_labels(
     for label_id, label in overflow_candidates.items():
         if label_id in placement_by_id:
             cx, cy = placement_by_id[label_id]["position"]
-            _update_overflow_label_position(label, cx, cy)
-            label.anchor = placement_by_id[label_id]["anchor"]
+            anchor = placement_by_id[label_id]["anchor"]
+            _update_overflow_label_position(label, cx, cy, anchor)
 
     return overflow_candidates

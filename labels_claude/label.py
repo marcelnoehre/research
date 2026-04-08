@@ -54,7 +54,7 @@ def render_label(
         padding_mm: float = 2.0,
         output_path: str = "label.pdf",
 ) -> None:
-    fontsize_pt = matplotlib.rcParams.get('font.size', 10.0)
+    fontsize_pt = 10.0
     ink_w_mm, ink_h_mm = measure_ink_mm(text, fontsize_pt)
 
     outer_w_mm = ink_w_mm + 2 * padding_mm

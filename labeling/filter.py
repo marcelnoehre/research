@@ -41,24 +41,27 @@ def filter_candidates_by_nodes(
         candidates: Dict[int, List[LabelCandidate]],
         concepts: List[int],
 ) -> Dict[int, List[LabelCandidate]]:
-    '''
-    '''
     filtered_candidates: Dict[int, List[LabelCandidate]] = {}
 
     for node, node_candidates in candidates.items():
         surviving = []
         for candidate in node_candidates:
-            ebl, _, etr, _ = candidate.expanded_bbox_corners
-            expanded = box(ebl[0], ebl[1], etr[0], etr[1])
-            occupied = any(
-                expanded.contains(Point(G.nodes[other]['pos']))
-                for other in concepts
-                if other != node and other in G.nodes
-            )
+            (bl_x, bl_y), _, (tr_x, tr_y), _ = candidate.expanded_bbox_corners
+            
+            occupied = False
+            for other in concepts:
+                if other == node:
+                    continue
+                ox, oy = G.nodes[other]['pos']
+                
+                if (bl_x <= ox <= tr_x) and (bl_y <= oy <= tr_y):
+                    occupied = True
+                    break
+            
             if not occupied:
                 surviving.append(candidate)
+                
         filtered_candidates[node] = surviving
-
     return filtered_candidates
 
 def filter_candidates_by_edges(

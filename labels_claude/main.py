@@ -136,7 +136,7 @@ def wrap_label_text(raw_items: list, formatter=str) -> str:
 # ---------------------------------------------------------------------------
 # Label setup
 # ---------------------------------------------------------------------------
-fontsize_pt = matplotlib.rcParams.get('font.size', 10.0)
+fontsize_pt = 10.0
 # LaTeX subscripts render smaller than plain text — measure the ratio and
 # scale up so the formula appears at the intended size.
 _sample_latex = node_label(0)

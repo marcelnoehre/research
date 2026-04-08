@@ -15,7 +15,7 @@ from typing import Dict, List, Tuple
 
 MAX_ROW_CHARS = 10
 K_ROWS = 2
-FONT_SIZE = matplotlib.rcParams.get('font.size', 10.0)
+FONT_SIZE = 10.0
 PHYSICAL_HEIGHT_MM = 100.0
 DPI = 150.0
 
@@ -77,7 +77,7 @@ def measure_ink_mm(text: str, fontsize_pt: float) -> tuple[float, float]:
     '''
     Return (ink_width_mm, ink_height_mm) by rasterising at 150 DPI.
     '''
-    fig, ax = plt.subplots(figsize=(8, 3), dpi=DPI)
+    fig, ax = plt.subplots(figsize=(8, 6), dpi=DPI)
     ax.axis('off')
     fig.patch.set_facecolor('white')
     ax.set_facecolor('white')
@@ -105,6 +105,7 @@ def compute_label_candidates(
         label_type: str = 'extent',
         padding_x_mm: float = 1.0,
         padding_y_mm: float = 1.0,
+        scaling_intensity: float = 0.25
 ) -> Dict[int, List[LabelCandidate]]:
     '''
     For every concept node, return candidate label placements.
@@ -126,6 +127,28 @@ def compute_label_candidates(
     '''
     if 'normalized_height' not in G.graph:
         raise ValueError("Call normalize_positions(G) before compute_label_candidates().")
+    
+    # 1. Get graph dimensions
+    xs = [G.nodes[n]['pos'][0] for n in G.nodes]
+    ys = [G.nodes[n]['pos'][1] for n in G.nodes]
+    
+    w_span = max(xs) - min(xs) if xs else 1.0
+    h_span = max(ys) - min(ys) if ys else 1.0
+    
+    # 2. Determine scaling factor
+    # If h > w, ratio < 1.0. We want padding to be LARGER when ratio is SMALL.
+    # We use (h_span / w_span) as the base multiplier.
+    ratio = h_span / w_span
+    
+    # Apply intensity: 1.0 keeps the raw ratio, lower values dampen the effect
+    # formula: 1 + (ratio - 1) * intensity
+    dynamic_scale = 1.0 + (ratio - 1.0) * scaling_intensity
+    
+    # Ensure we don't scale to 0 or negative in extreme edge cases
+    dynamic_scale = max(0.1, dynamic_scale)
+    
+    adj_padding_x = padding_x_mm * dynamic_scale
+    adj_padding_y = padding_y_mm * dynamic_scale
 
     # Restrict anchors by label type
     if label_type == 'general':
@@ -143,8 +166,8 @@ def compute_label_candidates(
     # Measure label in mm, convert to graph units
     ink_w_mm, ink_h_mm = measure_ink_mm(label_text, FONT_SIZE)
 
-    outer_w_mm = ink_w_mm + 2 * padding_x_mm
-    outer_h_mm = ink_h_mm + 2 * padding_y_mm
+    outer_w_mm = ink_w_mm + 2 * adj_padding_x
+    outer_h_mm = ink_h_mm + 2 * adj_padding_y
 
     half_w  = (outer_w_mm * units_per_mm) / 2.0
     half_h  = (outer_h_mm * units_per_mm) / 2.0
@@ -153,57 +176,87 @@ def compute_label_candidates(
     half_iw = (ink_w_mm  * units_per_mm) / 2.0
     half_ih = (ink_h_mm  * units_per_mm) / 2.0
 
-    # side gap
+    corner_multiplier = 1 / np.sqrt(2)
+    anchor_padding_scales = {
+        'top': 1.0, 'bottom': 1.0, 'left': 1.0, 'right': 1.0,
+        'top_left': corner_multiplier, 
+        'top_right': corner_multiplier,
+        'bottom_left': corner_multiplier, 
+        'bottom_right': corner_multiplier
+    }
+    anchor_extents: Dict[str, Tuple[float, float]] = {}
+
+    for anchor in allowed_anchors:
+        scale = anchor_padding_scales[anchor]
+        
+        # Scale the padding specifically for this anchor type
+        p_x = adj_padding_x * scale
+        p_y = adj_padding_y * scale
+        
+        # Calculate outer dimensions with dampened padding
+        o_w_units = (ink_w_mm + 2 * p_x) * units_per_mm
+        o_h_units = (ink_h_mm + 2 * p_y) * units_per_mm
+        
+        anchor_extents[anchor] = (o_w_units / 2.0, o_h_units / 2.0)
 
     anchor_offsets: Dict[str, Tuple[float, float]] = {
-        'top': ( 0.0, -(half_h + 2 * units_per_mm)),
-        'left': ( half_w + units_per_mm, 0.0),
-        'bottom': ( 0.0, half_h + 2 * units_per_mm),
-        'right': (-(half_w + units_per_mm), 0.0),
-        'top_left': ( half_w, -half_h),
-        'top_right': (-half_w, -half_h),
-        'bottom_left': ( half_w, half_h),
-        'bottom_right': (-half_w, half_h)
-    }
-
-    # Expansion = padding in each free direction, doubling the total gap
-    exp_x = (padding_x_mm * units_per_mm)
-    exp_y = (padding_y_mm * units_per_mm)
-
-    _expand_factors: Dict[str, Tuple[float, float, float, float]] = {
-        'top': (exp_x, exp_x, exp_y, 0),
-        'bottom': (exp_x, exp_x, 0, exp_y),
-        'left': (0, exp_x, exp_y, exp_y),
-        'right': (exp_x, 0, exp_y, exp_y),
-        'bottom_right': (exp_x, 0, 0, exp_y),
-        'bottom_left': (0, exp_x, 0, exp_y),
-        'top_right': (exp_x, 0, exp_y, 0),
-        'top_left': (0, exp_x, exp_y, 0)
+        'top':          (0.0, -anchor_extents['top'][1]),
+        'bottom':       (0.0,  anchor_extents['bottom'][1]),
+        'left':         ( anchor_extents['left'][0], 0.0),
+        'right':        (-anchor_extents['right'][0], 0.0),
+        
+        'top_left':     ( anchor_extents['top_left'][0],     -anchor_extents['top_left'][1]),
+        'top_right':    (-anchor_extents['top_right'][0],    -anchor_extents['top_right'][1]),
+        'bottom_left':  ( anchor_extents['bottom_left'][0],   anchor_extents['bottom_left'][1]),
+        'bottom_right': (-anchor_extents['bottom_right'][0],  anchor_extents['bottom_right'][1])
     }
 
     candidates: Dict[int, List[LabelCandidate]] = {}
 
     for node in concepts:
         node_x, node_y = G.nodes[node]['pos']
-
         node_candidates: List[LabelCandidate] = []
+        
         for anchor, (dx, dy) in anchor_offsets.items():
             if anchor not in allowed_anchors:
                 continue
+            
+            current_half_w, current_half_h = anchor_extents[anchor]
+            
             cx = node_x + dx
             cy = node_y + dy
 
-            bl = (cx - half_w,  cy - half_h)
-            br = (cx + half_w,  cy - half_h)
-            tr = (cx + half_w,  cy + half_h)
-            tl = (cx - half_w,  cy + half_h)
+            # Now the bbox corners match the adjusted padding
+            bl = (cx - current_half_w,  cy - current_half_h)
+            br = (cx + current_half_w,  cy - current_half_h)
+            tr = (cx + current_half_w,  cy + current_half_h)
+            tl = (cx - current_half_w,  cy + current_half_h)
 
+            # Inner ink stays the same (half_iw/half_ih are global)
             ibl = (cx - half_iw, cy - half_ih)
             ibr = (cx + half_iw, cy - half_ih)
             itr = (cx + half_iw, cy + half_ih)
             itl = (cx - half_iw, cy + half_ih)
 
-            dl, dr, db, dt = _expand_factors[anchor]
+            # --- FIX 2: Recalculate expansion factors based on the current anchor's padding ---
+            # This ensures the 'expanded' collision box shrinks along with the visual box
+            current_scale = anchor_padding_scales[anchor]
+            cur_exp_x = (adj_padding_x * current_scale * units_per_mm)
+            cur_exp_y = (adj_padding_y * current_scale * units_per_mm)
+
+            # Map the local expansion factors
+            _cur_expand = {
+                'top': (cur_exp_x, cur_exp_x, cur_exp_y, 0),
+                'bottom': (cur_exp_x, cur_exp_x, 0, cur_exp_y),
+                'left': (0, cur_exp_x, cur_exp_y, cur_exp_y),
+                'right': (cur_exp_x, 0, cur_exp_y, cur_exp_y),
+                'bottom_right': (cur_exp_x, 0, 0, cur_exp_y),
+                'bottom_left': (0, cur_exp_x, 0, cur_exp_y),
+                'top_right': (cur_exp_x, 0, cur_exp_y, 0),
+                'top_left': (0, cur_exp_x, cur_exp_y, 0)
+            }
+            
+            dl, dr, db, dt = _cur_expand[anchor]
             ebl = (bl[0] - dl, bl[1] - db)
             etr = (tr[0] + dr, tr[1] + dt)
             ebr = (etr[0], ebl[1])
@@ -243,9 +296,9 @@ def compute_overflow_label(
     node: int,
     label_text: str,
     label_type: str,
-    padding_x_mm: float = 1.75,
-    padding_y_mm: float = 1.75,
-    tight_padding_mm: float = 0.5,
+    padding_x_mm: float = 1.5,
+    padding_y_mm: float = 1.5,
+    scaling_intensity: float = 0.25
 ) -> OverflowLabel:
     '''
     Creates a centered overflow label for a specific node.
@@ -255,6 +308,28 @@ def compute_overflow_label(
     '''
     if 'normalized_height' not in G.graph:
         raise ValueError("Call normalize_positions(G) before compute.")
+    
+    # 1. Get graph dimensions
+    xs = [G.nodes[n]['pos'][0] for n in G.nodes]
+    ys = [G.nodes[n]['pos'][1] for n in G.nodes]
+    
+    w_span = max(xs) - min(xs) if xs else 1.0
+    h_span = max(ys) - min(ys) if ys else 1.0
+    
+    # 2. Determine scaling factor
+    # If h > w, ratio < 1.0. We want padding to be LARGER when ratio is SMALL.
+    # We use (h_span / w_span) as the base multiplier.
+    ratio = h_span / w_span
+    
+    # Apply intensity: 1.0 keeps the raw ratio, lower values dampen the effect
+    # formula: 1 + (ratio - 1) * intensity
+    dynamic_scale = 1.0 + (ratio - 1.0) * scaling_intensity
+    
+    # Ensure we don't scale to 0 or negative in extreme edge cases
+    dynamic_scale = max(0.1, dynamic_scale)
+    
+    adj_padding_x = padding_x_mm * dynamic_scale
+    adj_padding_y = padding_y_mm * dynamic_scale
 
     mm_per_unit = PHYSICAL_HEIGHT_MM / G.graph['normalized_height']
     units_per_mm = 1.0 / mm_per_unit
@@ -266,12 +341,12 @@ def compute_overflow_label(
     half_ih = (ink_h_mm * units_per_mm) / 2.0
 
     # Tight bbox (collision)
-    half_w  = ((ink_w_mm + 2 * tight_padding_mm) * units_per_mm) / 2.0
-    half_h  = ((ink_h_mm + 2 * tight_padding_mm) * units_per_mm) / 2.0
+    half_w  = ((ink_w_mm + 2 * adj_padding_x / 3) * units_per_mm) / 2.0
+    half_h  = ((ink_h_mm + 2 * adj_padding_y / 3) * units_per_mm) / 2.0
 
     # Extended bbox (visual)
-    half_ew = ((ink_w_mm + 2 * padding_x_mm) * units_per_mm) / 2.0
-    half_eh = ((ink_h_mm + 2 * padding_y_mm) * units_per_mm) / 2.0
+    half_ew = ((ink_w_mm + 2 * adj_padding_x) * units_per_mm) / 2.0
+    half_eh = ((ink_h_mm + 2 * adj_padding_y) * units_per_mm) / 2.0
 
     cx, cy = G.nodes[node]['pos']
 
