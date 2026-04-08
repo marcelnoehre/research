@@ -9,7 +9,7 @@ from shapely import Polygon
 from shapely.geometry import LineString, Point, box
 
 from label import LabelCandidate
-from topology import node_to_face_edges
+from topology import _clockwise, node_to_face_edges
 
 def restrict_outer_node_candidates(
         G: nx.Graph,
@@ -187,7 +187,51 @@ def filter_optimize_gaps(
         [node if isinstance(node, tuple) else G.nodes[node]['pos'] for node in face]
         for face in bounded_faces
     ]
+
+    def _get_nearest_active(start_idx, step, nodes, candidates, G):
+        """
+        Steps through the cycle to find the first node that has 
+        either candidates or a fixed position in G.
+        """
+        n = len(nodes)
+        curr = (start_idx + step) % n
+        while curr != start_idx:
+            node_id = nodes[curr]
+            if node_id in candidates and candidates[node_id]:
+                return Point(candidates[node_id][0].center)
+            if node_id in G.nodes and 'pos' in G.nodes[node_id]:
+                return Point(G.nodes[node_id]['pos'])
+            curr = (curr + step) % n
+        return None
+
+    clockwise_nodes = _clockwise(outer_nodes, G)
+    node_to_idx = {node_id: i for i, node_id in enumerate(clockwise_nodes)}
     face_polygons = [Polygon(face) for face in normalized_faces]
+
+    for node in outside:
+        idx = node_to_idx[node]
+
+        pos_prev = _get_nearest_active(idx, -1, clockwise_nodes, candidates, G)
+        pos_next = _get_nearest_active(idx, 1, clockwise_nodes, candidates, G)
+
+        best_candidate = None
+        max_min_gap = -1
+
+        for cand in candidates[node]:
+            pt = Point(cand.center)
+            
+            # Calculate distances only if a valid neighbor was found
+            d_prev = pt.distance(pos_prev) if pos_prev else float('inf')
+            d_next = pt.distance(pos_next) if pos_next else float('inf')
+            
+            min_gap = min(d_prev, d_next)
+            
+            if min_gap > max_min_gap:
+                max_min_gap = min_gap
+                best_candidate = cand
+                
+        if best_candidate:
+            filtered_candidates[node] = [best_candidate]
 
     for node in inside:
         points = [Point(candidate.center) for candidate in candidates[node]]
@@ -206,12 +250,11 @@ def filter_optimize_gaps(
             if min_face_idx in face_indices
         ]
 
-        if len(tied_candidates) > 1:
-            face_centroid = face_polygons[min_face_idx].centroid
-            best_candidate = min(
-                tied_candidates, 
-                key=lambda item: Point(item[1].center).distance(face_centroid)
-            )[1]
-            filtered_candidates[node] = [best_candidate]
+        face_centroid = face_polygons[min_face_idx].centroid
+        best_candidate = min(
+            tied_candidates, 
+            key=lambda item: Point(item[1].center).distance(face_centroid)
+        )[1]
+        filtered_candidates[node] = [best_candidate]
 
     return filtered_candidates
