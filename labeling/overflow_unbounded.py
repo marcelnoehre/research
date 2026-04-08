@@ -12,8 +12,8 @@ from overflow_bounded import (
     _label_wh_expanded,
     _label_bbox_polygon,
     _anchor_points,
-    _binding_line_valid,
-    _update_overflow_label_position,
+    update_overflow_label_position,
+    binding_line_valid,
 )
 
 OUTER_STEP = 0.5
@@ -205,7 +205,7 @@ def _place_along_ray(
             if line_beyond.intersects(own_tight_bbox):
                 continue
 
-            if _binding_line_valid(line, own_node_id, own_label_id, G, placed, overflow_candidates, label_candidates):
+            if binding_line_valid(line, own_node_id, own_label_id, G, placed, overflow_candidates, label_candidates):
                 score = _score_candidate(origin_x, origin_y, anchor_pt, node_pos, centroid, angle)
                 candidates.append((score, origin_x, origin_y, anchor_name, anchor_pt))
                 position_valid = True

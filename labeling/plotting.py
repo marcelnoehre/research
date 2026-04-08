@@ -128,7 +128,7 @@ def _draw_overflow_candidate(
         ))
 
     if candidate.anchor != 'overflow':
-        ax.scatter(*anchor_pt, color='grey', s=15, zorder=6, alpha=0.8)
+        ax.scatter(*anchor_pt, color='grey', s=5, zorder=6, alpha=0.8)
         nx, ny = G.nodes[candidate.node_id]['pos']
         ax.plot([anchor_pt[0], nx], [anchor_pt[1], ny], color='grey', linestyle='--', linewidth=0.5, alpha=0.4, zorder=4)
 
