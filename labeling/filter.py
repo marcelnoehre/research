@@ -1,8 +1,11 @@
+from collections import defaultdict
 import copy
+from itertools import combinations
 import networkx as nx
 
 from typing import Dict, List
 from fcapy.lattice import ConceptLattice
+from shapely import Polygon
 from shapely.geometry import LineString, Point, box
 
 from label import LabelCandidate
@@ -150,4 +153,65 @@ def filter_candidates_by_neighbor_direction(
                 continue
             filtered_candidates[node] = [c for c in filtered_candidates[node] if c.anchor not in filtered]
     
+    return filtered_candidates
+
+def filter_optimize_gaps(
+        G: nx.Graph,
+        candidates: Dict[int, List[LabelCandidate]],
+        bounded_faces: List[List],
+        outer_nodes: List,
+        lattice: ConceptLattice
+    ):
+    filtered_candidates = copy.deepcopy(candidates)
+    active_keys = {k for k, v in candidates.items() if len(v) > 1}
+
+    all_polys = []
+    for node_id, candidate_list in candidates.items():
+        for candidate in candidate_list:
+            poly = Polygon(candidate.bbox_corners)
+            cid = id(candidate)
+            all_polys.append((cid, node_id, poly))
+
+    intersections = []
+    for (cid1, fid1, p1), (cid2, fid2, p2) in combinations(all_polys, 2):
+        if fid1 == fid2:
+            continue
+        if p1.intersects(p2) and p1.intersection(p2).area > 0:
+            intersections.append(((cid1, fid1, p1), (cid2, fid2, p2)))
+
+    intersecting_nodes = {fid for pair in intersections for (cid, fid, p) in pair}
+    missing_keys = list(active_keys - intersecting_nodes)
+    outside, inside = [k for k in missing_keys if k in outer_nodes], [k for k in missing_keys if k not in outer_nodes]
+
+    normalized_faces = [
+        [node if isinstance(node, tuple) else G.nodes[node]['pos'] for node in face]
+        for face in bounded_faces
+    ]
+    face_polygons = [Polygon(face) for face in normalized_faces]
+
+    for node in inside:
+        points = [Point(candidate.center) for candidate in candidates[node]]
+
+        node_face_matches = [
+            [i for i, poly in enumerate(face_polygons) if poly.contains(pt)]
+            for pt in points
+        ]
+        all_matching_face_indices = [i for sublist in node_face_matches for i in sublist]
+
+        min_face_idx = min(all_matching_face_indices, key=lambda i: face_polygons[i].area)
+
+        tied_candidates = [
+            (cand_idx, candidates[node][cand_idx]) 
+            for cand_idx, face_indices in enumerate(node_face_matches)
+            if min_face_idx in face_indices
+        ]
+
+        if len(tied_candidates) > 1:
+            face_centroid = face_polygons[min_face_idx].centroid
+            best_candidate = min(
+                tied_candidates, 
+                key=lambda item: Point(item[1].center).distance(face_centroid)
+            )[1]
+            filtered_candidates[node] = [best_candidate]
+
     return filtered_candidates

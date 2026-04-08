@@ -7,7 +7,6 @@ from topology import *
 from label import *
 from filter import *
 from plotting import *
-from hybrid import *
 from overflow_bounded import *
 from overflow_unbounded import *
 
@@ -205,13 +204,13 @@ plot_lattice(
 )
 
 ################################################################################
-# Hybrid Approach
+# Filter to optimize gaps
 ################################################################################
-label_candidates, _ = hybrid_label_placement(label_candidates, True)
+label_candidates = filter_optimize_gaps(G, label_candidates, bounded_faces, outer_nodes, lattice.lattice)
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
-    output_path="figs/hybrid.pdf",
+    output_path="figs/optimize_gaps.pdf",
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
