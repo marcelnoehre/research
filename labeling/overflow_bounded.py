@@ -7,83 +7,49 @@ from typing import Dict, List, Optional, Tuple
 
 from label import LabelCandidate, OverflowLabel
 
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-NODE_BUFFER = 1.0
-
-# ---------------------------------------------------------------------------
+################################################################################
 # Geometry helpers
-# ---------------------------------------------------------------------------
+################################################################################
 
 def _label_wh(label: OverflowLabel) -> Tuple[float, float]:
-    """Tight bbox dimensions — used for anchor interpolation only."""
-    bl, br, tr, tl = label.bbox_corners
+    '''
+    Tight bbox dimensions for anchor interpolation only.
+    '''
+    bl, br, _, tl = label.bbox_corners
     return abs(br[0] - bl[0]), abs(tl[1] - bl[1])
-
 
 def _label_wh_expanded(label: OverflowLabel) -> Tuple[float, float]:
-    """Expanded bbox dimensions — used for all collision checks."""
-    bl, br, tr, tl = label.expanded_bbox_corners
+    '''
+    Expanded bbox dimensions for collision checks.
+    '''
+    bl, br, _, tl = label.expanded_bbox_corners
     return abs(br[0] - bl[0]), abs(tl[1] - bl[1])
 
-
 def _label_bbox_polygon(cx: float, cy: float, w: float, h: float) -> Polygon:
+    '''
+    Create a polygon for the label bbox centered at (cx, cy) with width w and height h.
+    '''
     hw, hh = w / 2, h / 2
     return Polygon([
         (cx - hw, cy - hh), (cx + hw, cy - hh),
         (cx + hw, cy + hh), (cx - hw, cy + hh),
     ])
 
-
 def _anchor_points(cx: float, cy: float, w: float, h: float) -> Dict[str, Tuple[float, float]]:
+    '''
+    Compute the anchor points for a label centered at (cx, cy) with width w and height h.
+    '''
     hw, hh = w / 2, h / 2
     return {
-        "top":          (cx,      cy + hh),
-        "bottom":       (cx,      cy - hh),
-        "left":         (cx - hw, cy     ),
-        "right":        (cx + hw, cy     ),
-        "top_left":     (cx - hw, cy + hh),
-        "top_right":    (cx + hw, cy + hh),
-        "bottom_left":  (cx - hw, cy - hh),
-        "bottom_right": (cx + hw, cy - hh),
+        'top':          (cx,      cy + hh),
+        'bottom':       (cx,      cy - hh),
+        'left':         (cx - hw, cy     ),
+        'right':        (cx + hw, cy     ),
+        'top_left':     (cx - hw, cy + hh),
+        'top_right':    (cx + hw, cy + hh),
+        'bottom_left':  (cx - hw, cy - hh),
+        'bottom_right': (cx + hw, cy - hh),
     }
-
-
-def _anchor_point_from_bbox(
-    anchor: str,
-    bbox_corners: Tuple,
-    inner_bbox_corners: Tuple,
-    c_factor: float = 1.0,
-    s_factor: float = 0.5,
-) -> Tuple[float, float]:
-    """
-    Compute the visual anchor point by interpolating between outer and inner bbox.
-    Matches exactly how anchors are plotted.
-    """
-    outer = bbox_corners
-    inner = inner_bbox_corners
-
-    def get_pt(out_pt, inn_pt, factor):
-        return (
-            out_pt[0] + (inn_pt[0] - out_pt[0]) * factor,
-            out_pt[1] + (inn_pt[1] - out_pt[1]) * factor,
-        )
-
-    anchor_lookup = {
-        'bottom_left':  get_pt(outer[0], inner[0], c_factor),
-        'bottom_right': get_pt(outer[1], inner[1], c_factor),
-        'top_right':    get_pt(outer[2], inner[2], c_factor),
-        'top_left':     get_pt(outer[3], inner[3], c_factor),
-        'bottom': get_pt(((outer[0][0]+outer[1][0])/2, outer[0][1]), ((inner[0][0]+inner[1][0])/2, inner[1][1]), s_factor),
-        'top':    get_pt(((outer[3][0]+outer[2][0])/2, outer[3][1]), ((inner[3][0]+inner[2][0])/2, inner[3][1]), s_factor),
-        'left':   get_pt((outer[0][0], (outer[0][1]+outer[3][1])/2), (inner[0][0], (inner[0][1]+inner[3][1])/2), s_factor),
-        'right':  get_pt((outer[1][0], (outer[1][1]+outer[2][1])/2), (inner[1][0], (inner[1][1]+inner[2][1])/2), s_factor),
-    }
-    return anchor_lookup[anchor]
-
 
 def _eroded_space(space: Polygon, w: float, h: float) -> Polygon:
     """Return the set of valid center positions for a w×h label inside space."""
@@ -170,13 +136,8 @@ def _find_valid_position(
     # Expanded dims for collision, tight dims for anchor interpolation
     ew, eh = _label_wh_expanded(label)
     hw, hh = w / 2, h / 2
-    half_ew, half_eh = ew / 2, eh / 2
 
-    # Inner bbox half-dimensions for anchor interpolation
-    ibl, ibr, itr, itl = label.inner_bbox_corners
-    half_iw = (ibr[0] - ibl[0]) / 2
-    half_ih = (itr[1] - ibr[1]) / 2
-
+    # Eroded Space
     eroded = _eroded_space(space, ew, eh)
     if eroded.is_empty:
         return None
@@ -217,20 +178,10 @@ def _find_valid_position(
     # Sort by closest visual anchor to node
     def _min_anchor_dist(p):
         cx_, cy_ = p
-        cand_bbox = (
-            (cx_ - hw,  cy_ - hh), (cx_ + hw,  cy_ - hh),
-            (cx_ + hw,  cy_ + hh), (cx_ - hw,  cy_ + hh),
-        )
-        cand_inner = (
-            (cx_ - half_iw, cy_ - half_ih), (cx_ + half_iw, cy_ - half_ih),
-            (cx_ + half_iw, cy_ + half_ih), (cx_ - half_iw, cy_ + half_ih),
-        )
+        anchors = _anchor_points(cx_, cy_, w, h)
         return min(
-            np.hypot(
-                _anchor_point_from_bbox(name, cand_bbox, cand_inner)[0] - node_pt[0],
-                _anchor_point_from_bbox(name, cand_bbox, cand_inner)[1] - node_pt[1],
-            )
-            for name in _anchor_points(cx_, cy_, w, h)
+            np.hypot(coords[0] - node_pt[0], coords[1] - node_pt[1])
+            for coords in anchors.values()
         )
 
     candidates.sort(key=_min_anchor_dist)
@@ -258,27 +209,24 @@ def _find_valid_position(
         ):
             continue
 
-        # Anchor interpolation uses tight bbox corners
-        candidate_bbox = (
-            (cx - hw,  cy - hh), (cx + hw,  cy - hh),
-            (cx + hw,  cy + hh), (cx - hw,  cy + hh),
-        )
-        candidate_inner = (
-            (cx - half_iw, cy - half_ih), (cx + half_iw, cy - half_ih),
-            (cx + half_iw, cy + half_ih), (cx - half_iw, cy + half_ih),
-        )
+        # 1. Get the real geometric anchor coordinates
+        real_anchors = _anchor_points(cx, cy, w, h)
 
+        # 2. Sort the anchor names by the distance between their coords and node_pt
         sorted_anchors = sorted(
-            _anchor_points(cx, cy, w, h).keys(),
+            real_anchors.keys(),
             key=lambda name: np.hypot(
-                _anchor_point_from_bbox(name, candidate_bbox, candidate_inner)[0] - node_pt[0],
-                _anchor_point_from_bbox(name, candidate_bbox, candidate_inner)[1] - node_pt[1],
+                real_anchors[name][0] - node_pt[0],
+                real_anchors[name][1] - node_pt[1]
             )
         )
 
+        # 3. Iterate and validate using the real points
         for anchor_name in sorted_anchors:
-            anchor_pt = _anchor_point_from_bbox(anchor_name, candidate_bbox, candidate_inner)
+            anchor_pt = real_anchors[anchor_name]
+            
             line = LineString([anchor_pt, node_pos])
+            
             if _binding_line_valid(line, own_node_id, own_label_id, G, placed, overflow_candidates, label_candidates):
                 return cx, cy, anchor_name, anchor_pt
 
@@ -405,70 +353,52 @@ def place_inner_overflow_labels(
     return placed
 
 
-# ---------------------------------------------------------------------------
-# Update overflow candidates with final positions
-# ---------------------------------------------------------------------------
-
 def _update_overflow_label_position(label: OverflowLabel, cx: float, cy: float, anchor: str):
-    """Shift bbox, inner_bbox and expanded_bbox corners to a new center (cx, cy)."""
+    '''
+    Shift bbox, inner_bbox and expanded_bbox corners to a new center (cx, cy).
+    '''
+    # Scale factor for corner anchors
     scale = (1 / np.sqrt(2)) if '_' in anchor else 1.0
 
-    # 2. Get the INK dimensions (these never change)
-    ibl, ibr, itr, itl = label.inner_bbox_corners
+    # ink size
+    ibl, ibr, _, itl = label.inner_bbox_corners
     half_iw = (ibr[0] - ibl[0]) / 2.0
     half_ih = (itl[1] - ibl[1]) / 2.0
 
-    # 3. Get the original PADDING from the existing expanded bbox
-    # (Expanded Width - Ink Width) / 2 = Original Padding in graph units
-    ebl, ebr, etr, etl = label.expanded_bbox_corners
+    # original padding from expanded bbox
+    ebl, ebr, _, etl = label.expanded_bbox_corners
     orig_px = ((ebr[0] - ebl[0]) / 2.0) - half_iw
     orig_py = ((etl[1] - ebl[1]) / 2.0) - half_ih
 
-    # 4. Apply the scale to the padding
+    # scaled half-extents
     adj_px = orig_px * scale
     adj_py = orig_py * scale
-
-    # 5. Calculate new half-extents for Visual (Expanded) and Collision (BBox)
-    # We maintain your 2/3 ratio for the collision bbox
     half_ew = half_iw + adj_px
     half_eh = half_ih + adj_py
-    
     half_w = half_iw + (adj_px * (2/3))
     half_h = half_ih + (adj_py * (2/3))
 
-    # 6. Apply to the label
+    # update label
     label.center = (cx, cy)
-    
-    # Visual Box (Expanded)
-    label.expanded_bbox_corners = (
-        (cx - half_ew,  cy - half_eh),
-        (cx + half_ew,  cy - half_eh),
-        (cx + half_ew,  cy + half_eh),
-        (cx - half_ew,  cy + half_eh),
-    )
-    
-    # Collision Box (Tight)
-    label.bbox_corners = (
-        (cx - half_w,  cy - half_h),
-        (cx + half_w,  cy - half_h),
-        (cx + half_w,  cy + half_h),
-        (cx - half_w,  cy + half_h),
-    )
-    
-    # Ink Box (Shifted center, dimensions unchanged)
+    label.anchor = anchor
     label.inner_bbox_corners = (
         (cx - half_iw, cy - half_ih),
         (cx + half_iw, cy - half_ih),
         (cx + half_iw, cy + half_ih),
         (cx - half_iw, cy + half_ih),
     )
-
-    label.anchor = anchor
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+    label.expanded_bbox_corners = (
+        (cx - half_ew,  cy - half_eh),
+        (cx + half_ew,  cy - half_eh),
+        (cx + half_ew,  cy + half_eh),
+        (cx - half_ew,  cy + half_eh),
+    )
+    label.bbox_corners = (
+        (cx - half_w,  cy - half_h),
+        (cx + half_w,  cy - half_h),
+        (cx + half_w,  cy + half_h),
+        (cx - half_w,  cy + half_h),
+    )
 
 def inner_overflow_labels(
     G: nx.Graph,

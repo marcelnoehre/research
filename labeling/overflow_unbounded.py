@@ -12,7 +12,6 @@ from overflow_bounded import (
     _label_wh_expanded,
     _label_bbox_polygon,
     _anchor_points,
-    _anchor_point_from_bbox,
     _binding_line_valid,
     _update_overflow_label_position,
 )
@@ -195,31 +194,38 @@ def _place_along_ray(
             (origin_x - half_iw, origin_y + half_ih),
         )
 
+        # 1. Compute the real geometric anchors once
+        anchors = _anchor_points(origin_x, origin_y, w, h)
+
+        # 2. Sort the keys (names) based on the distance from their real coords to node_pt
         sorted_anchors = sorted(
-            _anchor_points(origin_x, origin_y, w, h).keys(),
+            anchors.keys(),
             key=lambda name: np.hypot(
-                _anchor_point_from_bbox(name, candidate_bbox, candidate_inner)[0] - node_pt[0],
-                _anchor_point_from_bbox(name, candidate_bbox, candidate_inner)[1] - node_pt[1],
+                anchors[name][0] - node_pt[0],
+                anchors[name][1] - node_pt[1],
             )
         )
 
         found = False
         for anchor_name in sorted_anchors:
-            anchor_pt = _anchor_point_from_bbox(anchor_name, candidate_bbox, candidate_inner)
+            anchor_pt = anchors[anchor_name]
             line = LineString([anchor_pt, node_pos])
+            
             if _binding_line_valid(line, own_node_id, own_label_id, G, placed, overflow_candidates, label_candidates):
                 return origin_x, origin_y, anchor_name, anchor_pt
-            found = False
-
+            
+        # No valid binding was found
         if not found:
             if best_binding_fallback is None:
+                # Closest anchor as the fallback
                 best_anchor_name = sorted_anchors[0]
-                best_anchor_pt = _anchor_point_from_bbox(best_anchor_name, candidate_bbox, candidate_inner)
+                best_anchor_pt = anchors[best_anchor_name]
                 best_binding_fallback = (origin_x, origin_y, best_anchor_name, best_anchor_pt)
+                
                 if debug:
                     fallback_line = LineString([best_anchor_pt, node_pos])
                     print(f"    [binding] label_center=({origin_x:.2f},{origin_y:.2f}) "
-                          f"anchor_pt={best_anchor_pt} node_pos={node_pos}")
+                        f"anchor_pt={best_anchor_pt} node_pos={node_pos}")
                     print(f"    [binding] line: {list(fallback_line.coords)}")
                     _binding_line_debug(
                         fallback_line, own_node_id, own_label_id,

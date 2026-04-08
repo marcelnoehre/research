@@ -162,7 +162,7 @@ def plot_lattice(
         show_face_sizes: bool = False,
         label_candidates: Dict = {},
         label_texts: Dict = {},
-        fontsize_pt: float = 10.0,
+        fontsize_pt: float = 8.0,
         show_label_candidates: bool = False,
         colored_label_candidates: bool = False,
         overflow_labels: Dict = {},

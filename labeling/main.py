@@ -283,8 +283,7 @@ plot_lattice(
     show_label_candidates=True,
     colored_label_candidates=True,
     overflow_labels=overflow_candidates,
-    show_overflow_labels=True,
-    show_vertex_ids=True
+    show_overflow_labels=True
 )
 
 ################################################################################
