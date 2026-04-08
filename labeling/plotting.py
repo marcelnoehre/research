@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple
 from fcapy.context import FormalContext
 
 from fca.lattice import Lattice
-from label import DPI, LabelCandidate, OverflowLabel
+from label import DPI, LabelCandidate, OverflowLabel, compute_suggested_font_size
 
 _ANCHOR_COLOURS = {
     'top_left':     '#d62728',   # tab:red
@@ -74,6 +74,7 @@ def _draw_candidate(
         ha='center', va='center',
         fontsize=fontsize_pt,
         color=text_color,
+        clip_on=False,
         alpha=1.0,
         zorder=7,
     )
@@ -139,6 +140,7 @@ def _draw_overflow_candidate(
         ha='center', va='center',
         fontsize=fontsize_pt,
         color=text_color,
+        clip_on=False,
         alpha=1.0,
         zorder=7,
     )
@@ -162,9 +164,9 @@ def plot_lattice(
         show_face_sizes: bool = False,
         label_candidates: Dict = {},
         label_texts: Dict = {},
-        fontsize_pt: float = 8.0,
         show_label_candidates: bool = False,
         colored_label_candidates: bool = False,
+        show_legend: bool = False,
         overflow_labels: Dict = {},
         show_overflow_labels: bool = False
 ) -> None:
@@ -177,6 +179,7 @@ def plot_lattice(
     '''
     NODE_SIZE = 50
     LINE_WIDTH = 1.0
+    FONT_SIZE = compute_suggested_font_size(G)
     cmap = cm.YlOrRd
 
     def _pos(node):
@@ -248,7 +251,7 @@ def plot_lattice(
             for candidate in candidates:
                 text = label_texts.get((node_id, candidate.label_type))
                 if text is not None:
-                    txt = _draw_candidate(ax, candidate, text, fontsize_pt, colored_label_candidates)
+                    txt = _draw_candidate(ax, candidate, text, FONT_SIZE, colored_label_candidates)
                     # only measure ink box for chosen labels
                     text_colour_pairs.append((txt, _ANCHOR_COLOURS[candidate.anchor]))
 
@@ -258,18 +261,27 @@ def plot_lattice(
                             alpha=0.6, label=anchor.replace('_', ' '))
                 for anchor, colour in _ANCHOR_COLOURS.items()
             ]
-            ax.legend(handles=legend_handles, loc='upper left',
-                    fontsize=8, title='Label anchor', framealpha=0.8)
+            if show_legend:
+                ax.legend(handles=legend_handles, loc='upper left', fontsize=8, title='Label anchor', framealpha=0.8)
     
     ##### overflow candidates #####
     if show_overflow_labels and overflow_labels and label_texts:
         for overflow_label in overflow_labels.values():
             text = overflow_label.text
-            txt = _draw_overflow_candidate(G, ax, overflow_label, text, fontsize_pt, colored_label_candidates)
+            txt = _draw_overflow_candidate(G, ax, overflow_label, text, FONT_SIZE, colored_label_candidates)
             text_colour_pairs.append((txt, '#17becf')) # tab:cyan for overflow
 
-    ax.set_aspect('equal')
+    # 1. Get the range of the nodes only
+    xs = [G.nodes[n]['pos'][0] for n in G.nodes]
+    ys = [G.nodes[n]['pos'][1] for n in G.nodes]
+
+    # 2. Set the axes limits manually based on nodes + a fixed margin
+    margin = 1
+    ax.set_xlim(min(xs) - margin, max(xs) + margin)
+    ax.set_ylim(min(ys) - margin, max(ys) + margin)
+
+    # 3. LOCK the aspect ratio and limits
+    ax.set_aspect('equal', adjustable='datalim')
     ax.axis('off')
-    plt.tight_layout()
-    plt.savefig(output_path, format="pdf", bbox_inches='tight')
+    plt.savefig(output_path, format="pdf")
     plt.close(fig)

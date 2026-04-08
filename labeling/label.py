@@ -15,9 +15,18 @@ from typing import Dict, List, Tuple
 
 MAX_ROW_CHARS = 10
 K_ROWS = 2
-FONT_SIZE = 10.0
 PHYSICAL_HEIGHT_MM = 100.0
 DPI = 150.0
+
+def compute_suggested_font_size(G: nx.Graph, base_font_size: float = 12.0) -> float:
+    '''
+    Calculates a font size that scales down if the lattice is narrow.
+    '''
+    xs = [G.nodes[n]['pos'][0] for n in G.nodes]
+    w_span = max(xs) - min(xs) if xs else 1.0
+    reference_width = 100.0 
+    scale_factor = max(0.5, min(np.sqrt(w_span / reference_width), 1.2))
+    return base_font_size * scale_factor
 
 @dataclass
 class LabelCandidate:
@@ -77,35 +86,28 @@ def measure_ink_mm(text: str, fontsize_pt: float) -> tuple[float, float]:
     '''
     Return (ink_width_mm, ink_height_mm) by rasterising at 150 DPI.
     '''
-    fig, ax = plt.subplots(figsize=(8, 6), dpi=DPI)
-    ax.axis('off')
-    fig.patch.set_facecolor('white')
-    ax.set_facecolor('white')
-    ax.text(0.5, 0.5, text, 
-            ha='center', va='center', fontsize=fontsize_pt, transform=ax.transAxes, 
-            color='black', usetex=matplotlib.rcParams['text.usetex'])
+    fig = plt.figure(dpi=DPI)
+    ax = fig.add_subplot(111)
+    t = ax.text(0.5, 0.5, text, fontsize=fontsize_pt, usetex=matplotlib.rcParams['text.usetex'])
+
     canvas = FigureCanvasAgg(fig)
     canvas.draw()
-    ww, hh = canvas.get_width_height()
-    buf = np.frombuffer(canvas.tostring_argb(), dtype=np.uint8).reshape(hh, ww, 4)
-    mask = buf[:, :, 1:].min(axis=2) < 220
-    rows = np.any(mask, axis=1)
-    cols = np.any(mask, axis=0)
-    rmin, rmax = np.where(rows)[0][[0, -1]]
-    cmin, cmax = np.where(cols)[0][[0, -1]]
+    renderer = canvas.get_renderer()
+
+    bbox = t.get_window_extent(renderer=renderer)
+    width_px = bbox.width
+    height_px = bbox.height
+
     plt.close(fig)
 
     px_per_mm = DPI / 25.4
-    return (cmax - cmin + 1) / px_per_mm, (rmax - rmin + 1) / px_per_mm
+    return width_px / px_per_mm, height_px / px_per_mm
 
 def compute_label_candidates(
         G: nx.Graph,
         concepts: List[int],
         label_text: str,
-        label_type: str = 'extent',
-        padding_x_mm: float = 1.0,
-        padding_y_mm: float = 1.0,
-        scaling_intensity: float = 0.25
+        label_type: str = 'extent'
 ) -> Dict[int, List[LabelCandidate]]:
     '''
     For every concept node, return candidate label placements.
@@ -128,28 +130,6 @@ def compute_label_candidates(
     if 'normalized_height' not in G.graph:
         raise ValueError("Call normalize_positions(G) before compute_label_candidates().")
     
-    # 1. Get graph dimensions
-    xs = [G.nodes[n]['pos'][0] for n in G.nodes]
-    ys = [G.nodes[n]['pos'][1] for n in G.nodes]
-    
-    w_span = max(xs) - min(xs) if xs else 1.0
-    h_span = max(ys) - min(ys) if ys else 1.0
-    
-    # 2. Determine scaling factor
-    # If h > w, ratio < 1.0. We want padding to be LARGER when ratio is SMALL.
-    # We use (h_span / w_span) as the base multiplier.
-    ratio = h_span / w_span
-    
-    # Apply intensity: 1.0 keeps the raw ratio, lower values dampen the effect
-    # formula: 1 + (ratio - 1) * intensity
-    dynamic_scale = 1.0 + (ratio - 1.0) * scaling_intensity
-    
-    # Ensure we don't scale to 0 or negative in extreme edge cases
-    dynamic_scale = max(0.1, dynamic_scale)
-    
-    adj_padding_x = padding_x_mm * dynamic_scale
-    adj_padding_y = padding_y_mm * dynamic_scale
-
     # Restrict anchors by label type
     if label_type == 'general':
         allowed_anchors = {'top', 'left', 'bottom', 'right', 'top_left', 'top_right', 'bottom_left', 'bottom_right'}
@@ -164,13 +144,11 @@ def compute_label_candidates(
     units_per_mm = 1.0 / mm_per_unit
 
     # Measure label in mm, convert to graph units
-    ink_w_mm, ink_h_mm = measure_ink_mm(label_text, FONT_SIZE)
+    font_size = compute_suggested_font_size(G)
+    ink_w_mm, ink_h_mm = measure_ink_mm(label_text, font_size)
 
-    outer_w_mm = ink_w_mm + 2 * adj_padding_x
-    outer_h_mm = ink_h_mm + 2 * adj_padding_y
-
-    half_w  = (outer_w_mm * units_per_mm) / 2.0
-    half_h  = (outer_h_mm * units_per_mm) / 2.0
+    # padding
+    padding = ink_h_mm
 
     # Inner half-extents (ink only, no padding)
     half_iw = (ink_w_mm  * units_per_mm) / 2.0
@@ -190,8 +168,8 @@ def compute_label_candidates(
         scale = anchor_padding_scales[anchor]
         
         # Scale the padding specifically for this anchor type
-        p_x = adj_padding_x * scale
-        p_y = adj_padding_y * scale
+        p_x = padding * scale
+        p_y = padding * scale
         
         # Calculate outer dimensions with dampened padding
         o_w_units = (ink_w_mm + 2 * p_x) * units_per_mm
@@ -241,8 +219,8 @@ def compute_label_candidates(
             # --- FIX 2: Recalculate expansion factors based on the current anchor's padding ---
             # This ensures the 'expanded' collision box shrinks along with the visual box
             current_scale = anchor_padding_scales[anchor]
-            cur_exp_x = (adj_padding_x * current_scale * units_per_mm)
-            cur_exp_y = (adj_padding_y * current_scale * units_per_mm)
+            cur_exp_x = (padding * current_scale * units_per_mm)
+            cur_exp_y = (padding * current_scale * units_per_mm)
 
             # Map the local expansion factors
             _cur_expand = {
@@ -308,45 +286,27 @@ def compute_overflow_label(
     '''
     if 'normalized_height' not in G.graph:
         raise ValueError("Call normalize_positions(G) before compute.")
-    
-    # 1. Get graph dimensions
-    xs = [G.nodes[n]['pos'][0] for n in G.nodes]
-    ys = [G.nodes[n]['pos'][1] for n in G.nodes]
-    
-    w_span = max(xs) - min(xs) if xs else 1.0
-    h_span = max(ys) - min(ys) if ys else 1.0
-    
-    # 2. Determine scaling factor
-    # If h > w, ratio < 1.0. We want padding to be LARGER when ratio is SMALL.
-    # We use (h_span / w_span) as the base multiplier.
-    ratio = h_span / w_span
-    
-    # Apply intensity: 1.0 keeps the raw ratio, lower values dampen the effect
-    # formula: 1 + (ratio - 1) * intensity
-    dynamic_scale = 1.0 + (ratio - 1.0) * scaling_intensity
-    
-    # Ensure we don't scale to 0 or negative in extreme edge cases
-    dynamic_scale = max(0.1, dynamic_scale)
-    
-    adj_padding_x = padding_x_mm * dynamic_scale
-    adj_padding_y = padding_y_mm * dynamic_scale
 
     mm_per_unit = PHYSICAL_HEIGHT_MM / G.graph['normalized_height']
     units_per_mm = 1.0 / mm_per_unit
 
-    ink_w_mm, ink_h_mm = measure_ink_mm(label_text, FONT_SIZE)
+    font_size = compute_suggested_font_size(G)
+    ink_w_mm, ink_h_mm = measure_ink_mm(label_text, font_size)
+
+    # padding
+    padding = ink_h_mm
 
     # Ink only
     half_iw = (ink_w_mm * units_per_mm) / 2.0
     half_ih = (ink_h_mm * units_per_mm) / 2.0
 
     # Tight bbox (collision)
-    half_w  = ((ink_w_mm + 2 * adj_padding_x / 3) * units_per_mm) / 2.0
-    half_h  = ((ink_h_mm + 2 * adj_padding_y / 3) * units_per_mm) / 2.0
+    half_w  = ((ink_w_mm + 2 * padding / 3) * units_per_mm) / 2.0
+    half_h  = ((ink_h_mm + 2 * padding / 3) * units_per_mm) / 2.0
 
     # Extended bbox (visual)
-    half_ew = ((ink_w_mm + 2 * adj_padding_x) * units_per_mm) / 2.0
-    half_eh = ((ink_h_mm + 2 * adj_padding_y) * units_per_mm) / 2.0
+    half_ew = ((ink_w_mm + 2 * padding) * units_per_mm) / 2.0
+    half_eh = ((ink_h_mm + 2 * padding) * units_per_mm) / 2.0
 
     cx, cy = G.nodes[node]['pos']
 
