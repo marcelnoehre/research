@@ -373,7 +373,7 @@ def outer_overflow_labels(
             ew, eh = _label_wh_expanded(overflow_label)
             placed_union = placed_union.union(_label_bbox_polygon(new_cx, new_cy, ew, eh))
 
-            _update_overflow_label_position(overflow_label, new_cx, new_cy, anchor_name)
+            update_overflow_label_position(overflow_label, new_cx, new_cy, anchor_name)
             result_map[node_id] = overflow_label
 
     return result_map
