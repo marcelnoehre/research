@@ -159,8 +159,7 @@ def filter_optimize_gaps(
         G: nx.Graph,
         candidates: Dict[int, List[LabelCandidate]],
         bounded_faces: List[List],
-        outer_nodes: List,
-        lattice: ConceptLattice
+        outer_nodes: List
     ):
     filtered_candidates = copy.deepcopy(candidates)
     active_keys = {k for k, v in candidates.items() if len(v) > 1}
