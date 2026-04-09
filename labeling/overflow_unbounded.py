@@ -98,6 +98,7 @@ def _place_in_fan(
     own_label_id: int,
     G: nx.Graph,
     placed: List[dict],
+    placed_binders: List[LineString],
     overflow_candidates: Dict[int, OverflowLabel],
     label_candidates: Dict[int, List[LabelCandidate]]
 ) -> Optional[Tuple[float, float, str, Tuple]]:
@@ -107,6 +108,7 @@ def _place_in_fan(
     node_pt = np.array(node_pos)
     label = overflow_candidates[own_label_id]
     ew, eh = _label_wh_expanded(label)
+    tw, th = _label_wh(label)
     iw, ih = _ink_wh(label)
 
     # already placed outer overflow bboxes
@@ -154,19 +156,23 @@ def _place_in_fan(
 
             origin_x, origin_y = cx + dx * dist, cy + dy * dist
             expanded_bbox = _label_bbox_polygon(origin_x, origin_y, ew, eh)
+            tight_bbox = _label_bbox_polygon(origin_x, origin_y, tw, th)
 
             # overlaps with bounded space
             if outer_polygon.intersects(expanded_bbox): continue
             # overlaps with placed label candidate
             if placed_union.intersects(expanded_bbox): continue
             # overlaps with placed outer overflow candidate
-            if any(expanded_bbox.intersects(pb) for pb in placed_bboxes): continue
+            if any(tight_bbox.intersects(pb) for pb in placed_bboxes): continue
             # overlaps with a node of the drawing
             if any(
                 expanded_bbox.contains(Point(data['pos']))
                 for node_id, data in G.nodes(data=True)
                 if isinstance(node_id, int) and node_id != own_node_id
             ):
+                continue
+            # overlaps binder
+            if any(tight_bbox.intersects(binder) for binder in placed_binders):
                 continue
 
             # sort all anchors based on their distance to the respective node
@@ -186,6 +192,10 @@ def _place_in_fan(
 
                 # line crosses ink of own label
                 if own_ink_bbox.intersects(line):
+                    continue
+
+                # intersects with binder
+                if any(line.intersects(binder) for binder in placed_binders):
                     continue
 
                 if binding_line_valid(line, own_node_id, own_label_id, G, placed, overflow_candidates, label_candidates):
@@ -270,6 +280,7 @@ def outer_overflow_labels(
 
     # Place labels gap by gap
     placed: List[dict] = []
+    placed_binders = []
     result_map = dict(overflow_candidates)
 
     for gap in gaps:
@@ -296,7 +307,7 @@ def outer_overflow_labels(
                 node_pos,
                 overflow_label.node_id, 
                 node_id,
-                G, placed, 
+                G, placed, placed_binders,
                 overflow_candidates,
                 label_candidates
             )
@@ -305,16 +316,19 @@ def outer_overflow_labels(
                 print(f"Warning: could not place overflow label for node {node_id} "
                       f"in gap ({gap['node_left']}, {gap['node_right']})")
                 continue
+            print(f'Success: placed label for node {node_id}')
 
             new_cx, new_cy, anchor_name, anchor_pt = pos
 
+            binder = LineString([anchor_pt, node_pos])
             placed.append({
                 'label_id': node_id,
                 'position': (new_cx, new_cy),
                 'anchor': anchor_name,
                 'anchor_pt': anchor_pt,
-                'binding_line': LineString([anchor_pt, node_pos]),
+                'binding_line': binder,
             })
+            placed_binders.append(binder)
 
             # Carve out expanded bbox for next placements
             ew, eh = _label_wh_expanded(overflow_label)
