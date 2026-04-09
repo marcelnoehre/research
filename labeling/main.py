@@ -205,13 +205,13 @@ plot_lattice(
 )
 
 ################################################################################
-# Filter to optimize gaps
+# Hybrid Approach
 ################################################################################
-label_candidates = filter_optimize_gaps(G, label_candidates, bounded_faces, outer_nodes)
+label_candidates, _ = hybrid_label_placement(label_candidates, True)
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
-    output_path="figs/optimize_gaps.pdf",
+    output_path="figs/hybrid.pdf",
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
@@ -223,13 +223,13 @@ plot_lattice(
 )
 
 ################################################################################
-# Hybrid Approach
+# Filter to optimize gaps
 ################################################################################
-label_candidates, _ = hybrid_label_placement(label_candidates, True)
+label_candidates = filter_optimize_gaps(G, label_candidates, bounded_faces, outer_nodes)
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
-    output_path="figs/hybrid.pdf",
+    output_path="figs/optimize_gaps.pdf",
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,

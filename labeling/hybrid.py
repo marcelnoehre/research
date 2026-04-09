@@ -105,7 +105,7 @@ def _apply_L1(typed, active, chosen, conflicts, log) -> bool:
                 for k in range(len(cands)):
                     if k != ci:
                         active[(nid, lt, k)] = False
-                log.append(f"  L1  ({nid},{lt}) cand {ci} → chosen (no conflicts)")
+                log.append(f'  L1  ({nid},{lt}) cand {ci} → chosen (no conflicts)')
                 changed = True
                 break
     return changed
@@ -150,8 +150,8 @@ def _apply_L2(typed, active, chosen, conflicts, log) -> bool:
                             if k != kj:
                                 active[(qfk[0], qfk[1], k)] = False
                     log.append(
-                        f"  L2  ({nid},{lt}) cand {ci}"
-                        f" + ({qfk[0]},{qfk[1]}) cand {kj} → chosen"
+                        f'  L2  ({nid},{lt}) cand {ci}'
+                        f' + ({qfk[0]},{qfk[1]}) cand {kj} → chosen'
                     )
                     changed = True
                     break
@@ -191,8 +191,8 @@ def _apply_L3(typed, active, chosen, conflicts, log) -> bool:
                 if k != ci:
                     active[(nid, lt, k)] = False
             log.append(
-                f"  L3  ({nid},{lt}) cand {ci} → chosen "
-                f"({len(live)} live conflict(s) form a clique)"
+                f'  L3  ({nid},{lt}) cand {ci} -> chosen '
+                f'({len(live)} live conflict(s) form a clique)'
             )
             changed = True
     return changed
@@ -319,163 +319,97 @@ def hybrid_label_placement(
         verbose: bool = True,
 ) -> Tuple[Dict[int, List[LabelCandidate]], List[str]]:
     '''
-    Resolve ink-box conflicts among remaining label candidates using the
-    Hybrid algorithm from Wolff 1999, §3.2.1.
-
-    General (general), Extent (object), and intent (attribute) labels are treated as fully
-    independent features. Conflicts are detected only between candidates of different
-    features whose ink boxes strictly intersect.
-
-    Phase I  — exhaustive L1 / L2 / L3
-    Phase II — Kakoulis-Tollis clique reduction + max bipartite matching
-
-    Parameters
-    ----------
-    candidates : List
-        node_id, list of LabelCandidate
-    verbose : bool 
-        print the execution log to stdout
-
-    Returns
-    -------
-    chosen_map : List
-        node_id, list of chosen LabelCandidates
-    log : List
-        list of decision strings for debugging
+    Modified Hybrid algorithm: Preserves alternatives. 
+    Candidates of the same feature are allowed to overlap each other, 
+    but will still block candidates from DIFFERENT features.
     '''
     log: List[str] = []
-
-    # Split candidates by (node_id, label_type)
     typed = _split_by_type(candidates)
 
-    # active[(node_id, label_type, cand_idx)] = bool
     active: Dict[CKey, bool] = {
         (nid, lt, ci): True
         for (nid, lt), cands in typed.items()
         for ci in range(len(cands))
     }
-    # chosen[(node_id, label_type)] = cand_idx or None
+    
     chosen: Dict[FKey, Optional[int]] = {fk: None for fk in typed}
-
     conflicts = _build_conflict_index(typed)
 
-    total_cands = sum(len(v) for v in typed.values())
-    log.append(
-        f"Features: {len(typed)}  "
-        f"({sum(1 for fk in typed if fk[1]=='extent')} extent, "
-        f"{sum(1 for fk in typed if fk[1]=='intent')} intent, "
-        f"{sum(1 for fk in typed if fk[1]=='general')} general)  "
-        f"Candidates: {total_cands}"
-    )
-
-    # Phase I
-    log.append('=== Phase I: L1 / L2 / L3 ===')
-    iteration, changed = 0, True
-    while changed and iteration < 500:
+    # Phase I: Pruning
+    def _apply_L1_keep_alts(typed, active, chosen, conflicts, log) -> bool:
         changed = False
-        if _apply_L1(typed, active, chosen, conflicts, log):
-            changed = True
-        if _apply_L2(typed, active, chosen, conflicts, log):
-            changed = True
-        if _apply_L3(typed, active, chosen, conflicts, log):
-            changed = True
+        for fk, cands in typed.items():
+            if chosen[fk] is not None: continue
+            for ci, _ in enumerate(cands):
+                ck = (fk[0], fk[1], ci)
+                if not active[ck]: continue
+                if len(_live_conflicts(ck, conflicts, active, chosen)) == 0:
+                    chosen[fk] = ci
+                    log.append(f'  L1  {fk} cand {ci} is safe')
+                    changed = True
+                    break
+        return changed
+
+    iteration, changed = 0, True
+    while changed and iteration < 100:
+        changed = _apply_L1_keep_alts(typed, active, chosen, conflicts, log)
         iteration += 1
-    log.append(f'Phase I done after {iteration} pass(es)')
 
-    # Phase II
-    log.append('=== Phase II: KT heuristic + bipartite matching ===')
-
-    unresolved_keys: List[CKey] = [
-        (nid, lt, ci)
-        for (nid, lt), cands in typed.items()
-        if chosen[(nid, lt)] is None
-        for ci in range(len(cands))
-        if active[(nid, lt, ci)]
-    ]
-
-    if not unresolved_keys:
-        log.append('  No unresolved candidates — Phase II skipped')
-    else:
+    # Phase II: Clique reduction
+    unresolved_keys = [k for k, v in active.items() if v and chosen[(k[0], k[1])] is None]
+    if unresolved_keys:
         comps = _connected_components_keys(unresolved_keys, conflicts)
-        log.append(f'  Connected components: {len(comps)}')
-
-        all_cliques: List[List[CKey]] = []
+        all_cliques = []
         for comp in comps:
             all_cliques.extend(_kt_reduce(comp, typed, conflicts, active))
-        log.append(f'  Cliques after KT reduction: {len(all_cliques)}')
-
-        unresolved_features: List[FKey] = [
-            fk for fk, cands in typed.items()
-            if chosen[fk] is None
-            and any(active[(fk[0], fk[1], ci)] for ci in range(len(cands)))
-        ]
-        feature_to_clique = _maximum_bipartite_matching(unresolved_features, all_cliques)
-        log.append(
-            f'  Matched: {len(feature_to_clique)} / {len(unresolved_features)} features'
-        )
-
-        for fk, clique_idx in feature_to_clique.items():
+        
+        unresolved_features = [fk for fk, c in chosen.items() if c is None]
+        match = _maximum_bipartite_matching(unresolved_features, all_cliques)
+        for fk, clique_idx in match.items():
             clique = all_cliques[clique_idx]
-            matches = [
-                ci for (ni, lt, ci) in clique
-                if (ni, lt) == fk and active[(ni, lt, ci)]
-            ]
-            if matches:
-                chosen[fk] = matches[0]
-                log.append(f'  ({fk[0]},{fk[1]}) - cand {matches[0]} (matched)')
+            for (ni, lt, ci) in clique:
+                if (ni, lt) == fk:
+                    chosen[fk] = ci
+                    break
 
-        for fk in unresolved_features:
-            if fk not in feature_to_clique:
-                log.append(f'  ({fk[0]},{fk[1]}) - UNLABELED (unmatched)')
+    # FINAL CONSTRUCTION: Greedy Collector with Feature-Awareness
+    chosen_map: Dict[int, List[LabelCandidate]] = {nid: [] for nid in candidates}
+    
+    # Store tuples of (LabelCandidate, FKey) to know where each box came from
+    placed_entries: List[Tuple[LabelCandidate, FKey]] = []
 
-    # Build result map (node_id - list of chosen candidates)
-    # `placed` accumulates every label committed so far (Phase I + II + fallback)
-    # so that every subsequent placement is checked against the full placed set.
-    chosen_map: Dict[int, List[LabelCandidate]] = {
-        nid: [] for nid in candidates
-    }
-    placed: List[LabelCandidate] = []
+    def is_blocked(cand: LabelCandidate, current_fk: FKey) -> bool:
+        for p_cand, p_fk in placed_entries:
+            # If they are from DIFFERENT features, check for overlap
+            if current_fk != p_fk:
+                if _boxes_overlap(cand, p_cand):
+                    return True
+        return False
 
-    # First pass: commit Phase I / II decisions, verifying against placed so far.
-    for (nid, lt), cands in typed.items():
-        ci = chosen[(nid, lt)]
-        if ci is None or ci >= len(cands):
-            continue
-        c = cands[ci]
-        if not any(_boxes_overlap(c, p) for p in placed):
-            chosen_map[nid].append(c)
-            placed.append(c)
-        else:
-            # Clear the decision so the fallback pass can try other active candidates.
-            chosen[(nid, lt)] = None
-            log.append(
-                f'  WARNING ({nid},{lt}) cand {ci} skipped '
-                f'(overlaps an already-placed label)'
-            )
+    # 1. Place "Chosen" candidates first
+    for fk, ci in chosen.items():
+        if ci is not None:
+            cand = typed[fk][ci]
+            if not is_blocked(cand, fk):
+                chosen_map[fk[0]].append(cand)
+                placed_entries.append((cand, fk))
 
-    # Second pass: fallback for features still unresolved.
-    for (nid, lt), cands in typed.items():
-        if chosen[(nid, lt)] is not None:
-            continue
-        for sole_i, sole_c in (
-            (i, c) for i, c in enumerate(cands) if active[(nid, lt, i)]
-        ):
-            if not any(_boxes_overlap(sole_c, p) for p in placed):
-                chosen_map[nid].append(sole_c)
-                placed.append(sole_c)
-                log.append(
-                    f'  fallback ({nid},{lt}) cand {sole_i} → chosen '
-                    f'(no overlap with placed labels)'
-                )
-                break
-
-    n_extent  = sum(1 for lst in chosen_map.values() for c in lst if c.label_type == 'extent')
-    n_intent  = sum(1 for lst in chosen_map.values() for c in lst if c.label_type == 'intent')
-    n_general = sum(1 for lst in chosen_map.values() for c in lst if c.label_type == 'general')
-    log.append(f'Result: {n_extent} extent labels, {n_intent} intent labels, {n_general} general labels placed')
+    # 2. Place all other active alternatives
+    for (nid, lt, ci), is_active in active.items():
+        if not is_active: continue
+        fk = (nid, lt)
+        cand = typed[fk][ci]
+        
+        # Don't add the same object twice
+        if cand in chosen_map[nid]: continue
+        
+        if not is_blocked(cand, fk):
+            chosen_map[nid].append(cand)
+            placed_entries.append((cand, fk))
+            log.append(f'  Added alternative: {fk} index {ci}')
 
     if verbose:
-        for line in log:
-            print(line)
+        for line in log: print(line)
+        print(f'Total labels placed: {len(placed_entries)}')
 
     return chosen_map, log
