@@ -85,13 +85,34 @@ def _wedge_polygon(
     # pie slice without bounded space
     return wedge.difference(outer_polygon)
 
+def _calculate_cost(
+    dist: float, 
+    angle_offset: float, 
+    binder_length: float, 
+    is_cluttered: bool
+) -> float:
+    '''
+    Lower is better. Adjust weights to tune the "feel" of the placement.
+    '''
+    W_DIST = 1.5      # Penalize pushing labels too far out
+    W_ANGLE = 50.0    # Penalize drifting away from the intended slot
+    W_BINDER = 2.0    # Penalize long lines
+    W_CLUTTER = 100.0 # Heavy penalty for tight spacing
+
+    cost = (dist * W_DIST) + (abs(angle_offset) * W_ANGLE) + (binder_length * W_BINDER)
+    
+    if is_cluttered:
+        cost += W_CLUTTER
+        
+    return cost
+
 def _place_in_fan(
     central_angle: float,
     gap_size: float,
     centroid: Tuple[float, float],
     outer_polygon: Polygon,
     placed_union: Polygon,
-    w: float,
+    w: float, 
     h: float,
     node_pos: Tuple[float, float],
     own_node_id: int,
@@ -117,23 +138,20 @@ def _place_in_fan(
         for rec in placed if rec['label_id'] != own_label_id
     ]
 
-    # define candidate rays and sort by offset of central angle
-    num_rays = 10
-    spread = min(math.radians(30), gap_size * 0.8)
-    offsets = sorted(np.linspace(-spread/2, spread/2, num_rays), key=abs)
-    candidate_angles = [central_angle + off for off in offsets]
+    num_rays = 15 
+    spread = min(math.radians(40), gap_size * 0.9)
+    offsets = np.linspace(-spread/2, spread/2, num_rays)
+    
+    scored_candidates = []
 
-    best_candidate = None
-    min_dist_found = float('inf')
-
-    # check each ray
-    for angle in candidate_angles:
+    for off in offsets:
+        angle = central_angle + off
         dx, dy = math.cos(angle), math.sin(angle)
         
         # exit distance for this specific ray
         ray_line = LineString([(cx, cy), (cx + WEDGE_RADIUS * dx, cy + WEDGE_RADIUS * dy)])
         intersection = outer_polygon.exterior.intersection(ray_line)
-
+        
         # ray never touches outer cycle
         if intersection.is_empty:
             exit_dist = 0.0
@@ -145,18 +163,17 @@ def _place_in_fan(
             exit_dist = math.hypot(intersection.x - cx, intersection.y - cy)
 
         # start slightly inside to find true minimum
-        start_dist = max(0.0, exit_dist - OUTER_STEP * 4)
+        start_dist = max(0.0, exit_dist - OUTER_STEP * 2)
 
         for step in range(OUTER_MAX_STEPS):
             dist = start_dist + OUTER_STEP * step
             
-            # If this ray is already worse than another ray's success, move on
-            if dist >= min_dist_found:
+            if scored_candidates and dist > min(c[0] for c in scored_candidates) + 50:
                 break
 
             origin_x, origin_y = cx + dx * dist, cy + dy * dist
             expanded_bbox = _label_bbox_polygon(origin_x, origin_y, ew, eh)
-            tight_bbox = _label_bbox_polygon(origin_x, origin_y, tw, th)
+            tight_bbox = _label_bbox_polygon(origin_x, origin_y, tw, th) 
 
             # overlaps with bounded space
             if outer_polygon.intersects(expanded_bbox): continue
@@ -164,6 +181,8 @@ def _place_in_fan(
             if placed_union.intersects(expanded_bbox): continue
             # overlaps with placed outer overflow candidate
             if any(tight_bbox.intersects(pb) for pb in placed_bboxes): continue
+            # overlaps binder
+            if any(tight_bbox.intersects(binder) for binder in placed_binders): continue
             # overlaps with a node of the drawing
             if any(
                 expanded_bbox.contains(Point(data['pos']))
@@ -171,42 +190,51 @@ def _place_in_fan(
                 if isinstance(node_id, int) and node_id != own_node_id
             ):
                 continue
-            # overlaps binder
-            if any(tight_bbox.intersects(binder) for binder in placed_binders):
-                continue
 
-            # sort all anchors based on their distance to the respective node
+            # anchor selection
+            label_center = np.array([origin_x, origin_y])
+            vector_to_node = node_pt - label_center
+            dist_to_node = np.linalg.norm(vector_to_node)
+            unit_to_node = vector_to_node / dist_to_node if dist_to_node > 0 else vector_to_node
+
             own_ink_bbox = _label_bbox_polygon(origin_x, origin_y, iw, ih)
-            anchors = _anchor_points(origin_x, origin_y, w, h)
-            sorted_anchors = sorted(
-                anchors.keys(),
-                key=lambda name: np.hypot(
-                    anchors[name][0] - node_pt[0],
-                    anchors[name][1] - node_pt[1],
-                )
-            )
+            anchors = _anchor_points(origin_x, origin_y, tw, th)
 
-            for anchor_name in sorted_anchors:
-                anchor_pt = anchors[anchor_name]
-                line = LineString([anchor_pt, node_pos])
+            # Score anchors by alignment (dot product)
+            # We want the anchor that points MOST towards the node
+            scored_anchors = []
+            for name, pt in anchors.items():
+                vector_to_anchor = np.array(pt) - label_center
+                a_norm = np.linalg.norm(vector_to_anchor)
+                alignment = np.dot(unit_to_node, vector_to_anchor / a_norm) if a_norm > 0 else -1.0
+                scored_anchors.append((alignment, name, pt))
+            
+            # Sort by alignment descending (best alignment first)
+            scored_anchors.sort(key=lambda x: x[0], reverse=True)
 
+            for alignment, name, pt in scored_anchors:
+                line = LineString([pt, node_pos])
+                
                 # line crosses ink of own label
-                if own_ink_bbox.intersects(line):
-                    continue
-
+                if own_ink_bbox.intersects(line): continue
                 # intersects with binder
-                if any(line.intersects(binder) for binder in placed_binders):
-                    continue
+                if any(line.intersects(binder) for binder in placed_binders): continue
 
                 if binding_line_valid(line, own_node_id, own_label_id, G, placed, overflow_candidates, label_candidates):
-                    min_dist_found = dist
-                    best_candidate = (origin_x, origin_y, anchor_name, anchor_pt)
-                    break # best position for this ray
+                    alignment_penalty = (1.0 - alignment) * 10 
+                    cost = _calculate_cost(dist, off, line.length, False) + alignment_penalty
+                    
+                    scored_candidates.append((cost, (origin_x, origin_y, name, pt)))
+                    break 
             
-            if best_candidate and dist == min_dist_found:
-                break # check next ray
+            if any(c[1][0] == origin_x and c[1][1] == origin_y for c in scored_candidates):
+                break 
 
-    return best_candidate
+    if not scored_candidates:
+        return None
+
+    scored_candidates.sort(key=lambda x: x[0])
+    return scored_candidates[0][1]
 
 def outer_overflow_labels(
     G: nx.Graph,
