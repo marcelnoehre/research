@@ -131,7 +131,8 @@ def binding_line_valid(
             continue
         
         # binder intersects with a node
-        if line.distance(Point(data['pos'])) < 1e-6:
+        # 0.1 = radius of plotted nodes
+        if line.distance(Point(data['pos'])) < 0.15:
             return False
 
     # valid - no conflict found

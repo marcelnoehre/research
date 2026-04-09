@@ -64,7 +64,6 @@ def _sort_by_node_angle(
 
     return sorted(assigned, key=node_angle_in_gap)
 
-
 def _wedge_polygon(
     centroid: Tuple[float, float],
     a_left: float,
@@ -86,28 +85,9 @@ def _wedge_polygon(
     # pie slice without bounded space
     return wedge.difference(outer_polygon)
 
-
-def _score_candidate(
-    origin_x: float,
-    origin_y: float,
-    anchor_pt: Tuple[float, float],
-    node_pos: Tuple[float, float],
-    centroid: Tuple[float, float],
-    slot_angle: float,
-) -> float:
-    '''
-    Lower score = better placement.
-    Primary:   binding line length (label close to its node).
-    Secondary: angular deviation of label center from the slot ray.
-    '''
-    binding_length = math.hypot(anchor_pt[0] - node_pos[0], anchor_pt[1] - node_pos[1])
-    label_angle = _angle_from_centroid(centroid, (origin_x, origin_y))
-    angle_dev = abs(math.sin(_angular_gap_between(slot_angle, label_angle)))
-    return binding_length + 5.0 * angle_dev
-
-
-def _place_along_ray(
-    angle: float,
+def _place_in_fan(
+    central_angle: float,
+    gap_size: float,
     centroid: Tuple[float, float],
     outer_polygon: Polygon,
     placed_union: Polygon,
@@ -119,173 +99,104 @@ def _place_along_ray(
     G: nx.Graph,
     placed: List[dict],
     overflow_candidates: Dict[int, OverflowLabel],
-    label_candidates: Dict[int, List[LabelCandidate]],
-    debug: bool = False,
+    label_candidates: Dict[int, List[LabelCandidate]]
 ) -> Optional[Tuple[float, float, str, Tuple]]:
+    '''
+    '''
     cx, cy = centroid
-    dx, dy = math.cos(angle), math.sin(angle)
     node_pt = np.array(node_pos)
-
-    # bbox for collision checks
     label = overflow_candidates[own_label_id]
     ew, eh = _label_wh_expanded(label)
+    iw, ih = _ink_wh(label)
 
-    # positions of already placed overflow labels
+    # already placed outer overflow bboxes
     placed_bboxes = [
         _label_bbox_polygon(*rec['position'], *_label_wh_expanded(overflow_candidates[rec['label_id']]))
         for rec in placed if rec['label_id'] != own_label_id
     ]
 
-    # position, of the ray leaving the bounded polygon
-    ray_line = LineString([(cx, cy), (cx + WEDGE_RADIUS * dx, cy + WEDGE_RADIUS * dy)])
-    intersection = outer_polygon.exterior.intersection(ray_line)
+    # define candidate rays and sort by offset of central angle
+    num_rays = 10
+    spread = min(math.radians(30), gap_size * 0.8)
+    offsets = sorted(np.linspace(-spread/2, spread/2, num_rays), key=abs)
+    candidate_angles = [central_angle + off for off in offsets]
 
-    # ray never touches outer cycle
-    if intersection.is_empty:
-        exit_dist = 0.0
-    # hits outer cycle multiple times - final exit point
-    elif hasattr(intersection, 'geoms'):
-        exit_dist = max(
-            math.hypot(pt.x - cx, pt.y - cy)
-            for pt in intersection.geoms
-        )
-    # hits outer cycle at exactly one point
-    else:
-        exit_dist = math.hypot(intersection.x - cx, intersection.y - cy)
+    best_candidate = None
+    min_dist_found = float('inf')
 
-    # start slightly inside to find true minimum
-    start_dist = max(0.0, exit_dist - OUTER_STEP * 4)
+    # check each ray
+    for angle in candidate_angles:
+        dx, dy = math.cos(angle), math.sin(angle)
+        
+        # exit distance for this specific ray
+        ray_line = LineString([(cx, cy), (cx + WEDGE_RADIUS * dx, cy + WEDGE_RADIUS * dy)])
+        intersection = outer_polygon.exterior.intersection(ray_line)
 
-    # setup fail counters
-    fail_outer = 0
-    fail_placed_union = 0
-    fail_placed_bboxes = 0
-    fail_node_in_bbox = 0
-    fail_binding = 0
+        # ray never touches outer cycle
+        if intersection.is_empty:
+            exit_dist = 0.0
+        # hits outer cycle multiple times - final exit point
+        elif hasattr(intersection, 'geoms'):
+            exit_dist = max(math.hypot(pt.x - cx, pt.y - cy) for pt in intersection.geoms)
+        # hits outer cycle at exactly one point
+        else:
+            exit_dist = math.hypot(intersection.x - cx, intersection.y - cy)
 
-    # fallback
-    best_binding_fallback: Optional[Tuple[float, float, str, Tuple]] = None
+        # start slightly inside to find true minimum
+        start_dist = max(0.0, exit_dist - OUTER_STEP * 4)
 
-    # pool of valid candidates
-    candidates: List[Tuple[float, float, float, str, Tuple]] = []  # (score, ox, oy, anchor_name, anchor_pt)
+        for step in range(OUTER_MAX_STEPS):
+            dist = start_dist + OUTER_STEP * step
+            
+            # If this ray is already worse than another ray's success, move on
+            if dist >= min_dist_found:
+                break
 
-    for step in range(OUTER_MAX_STEPS):
-        # found max number of best candidates
-        if len(candidates) >= OUTER_CANDIDATE_POOL:
-            break
+            origin_x, origin_y = cx + dx * dist, cy + dy * dist
+            expanded_bbox = _label_bbox_polygon(origin_x, origin_y, ew, eh)
 
-        # size of possible candidate
-        dist = start_dist + OUTER_STEP * step
-        origin_x = cx + dx * dist
-        origin_y = cy + dy * dist
-        expanded_bbox = _label_bbox_polygon(origin_x, origin_y, ew, eh)
-
-        # overlaps with bounded space
-        if outer_polygon.intersects(expanded_bbox):
-            fail_outer += 1
-            continue
-
-        # overlaps with placed label candidate
-        if placed_union.intersects(expanded_bbox):
-            fail_placed_union += 1
-            continue
-
-        # overlaps with placed outer overflow candidate
-        if any(expanded_bbox.intersects(pb) for pb in placed_bboxes):
-            fail_placed_bboxes += 1
-            continue
-
-        # overlaps with a node of the drawing
-        if any(
-            expanded_bbox.contains(Point(data['pos']))
-            for node_id, data in G.nodes(data=True)
-            if isinstance(node_id, int) and node_id != own_node_id
-        ):
-            fail_node_in_bbox += 1
-            continue
-
-        # sort all anchors based on their distance to the respective node
-        iw, ih = _ink_wh(label)
-        own_ink_bbox = _label_bbox_polygon(origin_x, origin_y, iw, ih)
-        own_tight_bbox = _label_bbox_polygon(origin_x, origin_y, w, h)
-        anchors = _anchor_points(origin_x, origin_y, w, h)
-        sorted_anchors = sorted(
-            anchors.keys(),
-            key=lambda name: np.hypot(
-                anchors[name][0] - node_pt[0],
-                anchors[name][1] - node_pt[1],
-            )
-        )
-
-        position_valid = False
-        for anchor_name in sorted_anchors:
-            anchor_pt = anchors[anchor_name]
-            line = LineString([anchor_pt, node_pos])
-
-            # line crosses ink of own label
-            if own_ink_bbox.intersects(line):
+            # overlaps with bounded space
+            if outer_polygon.intersects(expanded_bbox): continue
+            # overlaps with placed label candidate
+            if placed_union.intersects(expanded_bbox): continue
+            # overlaps with placed outer overflow candidate
+            if any(expanded_bbox.intersects(pb) for pb in placed_bboxes): continue
+            # overlaps with a node of the drawing
+            if any(
+                expanded_bbox.contains(Point(data['pos']))
+                for node_id, data in G.nodes(data=True)
+                if isinstance(node_id, int) and node_id != own_node_id
+            ):
                 continue
 
-            # validate binding line
-            if binding_line_valid(line, own_node_id, own_label_id, G, placed, overflow_candidates, label_candidates):
-                score = _score_candidate(origin_x, origin_y, anchor_pt, node_pos, centroid, angle)
-                candidates.append((score, origin_x, origin_y, anchor_name, anchor_pt))
-                position_valid = True
-                break
-        
-        if not position_valid:
+            # sort all anchors based on their distance to the respective node
+            own_ink_bbox = _label_bbox_polygon(origin_x, origin_y, iw, ih)
+            anchors = _anchor_points(origin_x, origin_y, w, h)
+            sorted_anchors = sorted(
+                anchors.keys(),
+                key=lambda name: np.hypot(
+                    anchors[name][0] - node_pt[0],
+                    anchors[name][1] - node_pt[1],
+                )
+            )
 
-            # Record a non-self-crossing fallback in case we find nothing fully valid
-            if best_binding_fallback is None:
-                for name in sorted_anchors:
-                    pt = anchors[name]
-                    l = LineString([pt, node_pos])
-                    beyond = l.difference(own_tight_bbox.boundary)
-                    if not beyond.intersects(own_tight_bbox):
-                        best_binding_fallback = (origin_x, origin_y, name, pt)
-                        break
-                if best_binding_fallback is None:
-                    name = sorted_anchors[0]
-                    best_binding_fallback = (origin_x, origin_y, name, anchors[name])
+            for anchor_name in sorted_anchors:
+                anchor_pt = anchors[anchor_name]
+                line = LineString([anchor_pt, node_pos])
 
-                if debug:
-                    fb_anchor_pt = best_binding_fallback[3]
-                    fallback_line = LineString([fb_anchor_pt, node_pos])
-                    print(f"    [binding] label_center=({origin_x:.2f},{origin_y:.2f}) "
-                          f"anchor_pt={fb_anchor_pt} node_pos={node_pos}")
-                    print(f"    [binding] line: {list(fallback_line.coords)}")
+                # line crosses ink of own label
+                if own_ink_bbox.intersects(line):
+                    continue
 
-            fail_binding += 1
+                if binding_line_valid(line, own_node_id, own_label_id, G, placed, overflow_candidates, label_candidates):
+                    min_dist_found = dist
+                    best_candidate = (origin_x, origin_y, anchor_name, anchor_pt)
+                    break # best position for this ray
+            
+            if best_candidate and dist == min_dist_found:
+                break # check next ray
 
-    print(
-            f"  [debug] label {own_label_id} / node {own_node_id} — "
-            f"angle {math.degrees(angle):.1f}°  exit_dist {exit_dist:.1f}  "
-            f"steps {OUTER_MAX_STEPS}  "
-            f"fail_outer={fail_outer}  fail_placed_union={fail_placed_union}  "
-            f"fail_placed_bboxes={fail_placed_bboxes}  "
-            f"fail_node_in_bbox={fail_node_in_bbox}  fail_binding={fail_binding}  "
-            f"fallback={'yes' if best_binding_fallback else 'no'}"
-        )
-
-    if candidates:
-        # Pick the candidate with the lowest score
-        candidates.sort(key=lambda c: c[0])
-        _, best_x, best_y, best_anchor, best_anchor_pt = candidates[0]
-        return best_x, best_y, best_anchor, best_anchor_pt
-
-    if debug:
-        print(
-            f"  [debug] label {own_label_id} / node {own_node_id} — "
-            f"angle {math.degrees(angle):.1f}°  exit_dist {exit_dist:.1f}  "
-            f"steps {OUTER_MAX_STEPS}  "
-            f"fail_outer={fail_outer}  fail_placed_union={fail_placed_union}  "
-            f"fail_placed_bboxes={fail_placed_bboxes}  "
-            f"fail_node_in_bbox={fail_node_in_bbox}  fail_binding={fail_binding}  "
-            f"fallback={'yes' if best_binding_fallback else 'no'}"
-        )
-
-    return best_binding_fallback
-
+    return best_candidate
 
 def outer_overflow_labels(
     G: nx.Graph,
@@ -375,23 +286,22 @@ def outer_overflow_labels(
             w, h = _label_wh(overflow_label)
             node_pos = G.nodes[overflow_label.node_id]["pos"]
 
-            pos = _place_along_ray(
-                slot_angle, centroid, outer_polygon,
-                placed_union, w, h, node_pos,
-                overflow_label.node_id, node_id,
-                G, placed, overflow_candidates,
-                label_candidates, debug=True
+            pos = _place_in_fan(
+                slot_angle, 
+                gap["gap_size"],
+                centroid, 
+                outer_polygon,
+                placed_union, 
+                w, h, 
+                node_pos,
+                overflow_label.node_id, 
+                node_id,
+                G, placed, 
+                overflow_candidates,
+                label_candidates
             )
 
             if pos is None:
-                # Retry with debug
-                _place_along_ray(
-                    slot_angle, centroid, outer_polygon,
-                    placed_union, w, h, node_pos,
-                    overflow_label.node_id, node_id,
-                    G, placed, overflow_candidates,
-                    label_candidates, debug=True,
-                )
                 print(f"Warning: could not place overflow label for node {node_id} "
                       f"in gap ({gap['node_left']}, {gap['node_right']})")
                 continue
