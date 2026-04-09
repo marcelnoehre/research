@@ -21,13 +21,26 @@ OUTER_MAX_STEPS = 500
 WEDGE_RADIUS = 1e4
 OUTER_CANDIDATE_POOL = 12
 
+def _ink_wh(label: OverflowLabel) -> Tuple[float, float]:
+    '''
+    Ink bbox dimensions.
+    '''
+    bl, br, _, tl = label.inner_bbox_corners
+    return abs(br[0] - bl[0]), abs(tl[1] - bl[1])
 
 def _angle_from_centroid(centroid: Tuple[float, float], point: Tuple[float, float]) -> float:
+    '''
+    angle from the centroid of the drawing to a node
+    [-pi, pi]
+    '''
     return math.atan2(point[1] - centroid[1], point[0] - centroid[0])
 
 
 def _angular_gap_between(a1: float, a2: float) -> float:
-    """CCW arc from a1 to a2 in [0, 2pi)."""
+    '''
+    Measures the angular gap between two outer nodes
+    [0, 2pi]
+    '''
     return (a2 - a1) % (2 * math.pi)
 
 
@@ -38,14 +51,14 @@ def _sort_by_node_angle(
     G: nx.Graph,
     overflow_candidates: Dict[int, OverflowLabel],
 ) -> List[int]:
-    """
+    '''
     Sort assigned label ids by their node's angle from centroid within the gap,
     so slot order matches node order and binding lines don't cross each other.
-    """
-    a_left = gap["a_left"]
+    '''
+    a_left = gap['a_left']
 
     def node_angle_in_gap(node_id):
-        node_pos = G.nodes[overflow_candidates[node_id].node_id]["pos"]
+        node_pos = G.nodes[overflow_candidates[node_id].node_id]['pos']
         angle = _angle_from_centroid(centroid, node_pos)
         return _angular_gap_between(a_left, angle)
 
@@ -59,7 +72,9 @@ def _wedge_polygon(
     outer_polygon: Polygon,
     radius: float = WEDGE_RADIUS,
 ) -> Polygon:
-    """Pie-slice from centroid outward between a_left and a_right (CCW), minus the outer polygon."""
+    '''
+    Pie-slice from centroid outward between node angles a_left and a_right (CCW), minus the outer polygon.
+    '''
     cx, cy = centroid
     arc_steps = max(16, int(math.degrees(_angular_gap_between(a_left, a_right))))
     arc = []
@@ -68,6 +83,7 @@ def _wedge_polygon(
         angle = a_left + _angular_gap_between(a_left, a_right) * t
         arc.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
     wedge = Polygon([(cx, cy)] + arc + [(cx, cy)])
+    # pie slice without bounded space
     return wedge.difference(outer_polygon)
 
 
@@ -79,14 +95,14 @@ def _score_candidate(
     centroid: Tuple[float, float],
     slot_angle: float,
 ) -> float:
-    """
+    '''
     Lower score = better placement.
     Primary:   binding line length (label close to its node).
     Secondary: angular deviation of label center from the slot ray.
-    """
+    '''
     binding_length = math.hypot(anchor_pt[0] - node_pos[0], anchor_pt[1] - node_pos[1])
     label_angle = _angle_from_centroid(centroid, (origin_x, origin_y))
-    angle_dev = abs(math.sin(_angular_gap_between(slot_angle, label_angle)))  # ~angular error
+    angle_dev = abs(math.sin(_angular_gap_between(slot_angle, label_angle)))
     return binding_length + 5.0 * angle_dev
 
 
@@ -109,84 +125,90 @@ def _place_along_ray(
     cx, cy = centroid
     dx, dy = math.cos(angle), math.sin(angle)
     node_pt = np.array(node_pos)
-    hw, hh = w / 2, h / 2
 
-    # Expanded dims for collision
+    # bbox for collision checks
     label = overflow_candidates[own_label_id]
     ew, eh = _label_wh_expanded(label)
 
-    # Inner bbox half-dims for anchor interpolation
-    ibl, ibr, itr, itl = label.inner_bbox_corners
-    half_iw = (ibr[0] - ibl[0]) / 2
-    half_ih = (itr[1] - ibr[1]) / 2
-
+    # positions of already placed overflow labels
     placed_bboxes = [
-        _label_bbox_polygon(*rec["position"], *_label_wh_expanded(overflow_candidates[rec["label_id"]]))
-        for rec in placed if rec["label_id"] != own_label_id
+        _label_bbox_polygon(*rec['position'], *_label_wh_expanded(overflow_candidates[rec['label_id']]))
+        for rec in placed if rec['label_id'] != own_label_id
     ]
 
-    # Find where ray exits the outer polygon
+    # position, of the ray leaving the bounded polygon
     ray_line = LineString([(cx, cy), (cx + WEDGE_RADIUS * dx, cy + WEDGE_RADIUS * dy)])
     intersection = outer_polygon.exterior.intersection(ray_line)
 
+    # ray never touches outer cycle
     if intersection.is_empty:
         exit_dist = 0.0
-    elif hasattr(intersection, "geoms"):
+    # hits outer cycle multiple times - final exit point
+    elif hasattr(intersection, 'geoms'):
         exit_dist = max(
             math.hypot(pt.x - cx, pt.y - cy)
             for pt in intersection.geoms
         )
+    # hits outer cycle at exactly one point
     else:
         exit_dist = math.hypot(intersection.x - cx, intersection.y - cy)
 
-    # Start a few steps before the polygon boundary so the tight-bbox check
-    # finds the true minimum clearance rather than assuming exit_dist is enough.
+    # start slightly inside to find true minimum
     start_dist = max(0.0, exit_dist - OUTER_STEP * 4)
 
+    # setup fail counters
     fail_outer = 0
     fail_placed_union = 0
     fail_placed_bboxes = 0
     fail_node_in_bbox = 0
     fail_binding = 0
+
+    # fallback
     best_binding_fallback: Optional[Tuple[float, float, str, Tuple]] = None
 
-    # Collect a pool of valid candidates, then pick the best-scoring one.
+    # pool of valid candidates
     candidates: List[Tuple[float, float, float, str, Tuple]] = []  # (score, ox, oy, anchor_name, anchor_pt)
 
     for step in range(OUTER_MAX_STEPS):
+        # found max number of best candidates
         if len(candidates) >= OUTER_CANDIDATE_POOL:
             break
 
+        # size of possible candidate
         dist = start_dist + OUTER_STEP * step
         origin_x = cx + dx * dist
         origin_y = cy + dy * dist
-
         expanded_bbox = _label_bbox_polygon(origin_x, origin_y, ew, eh)
 
+        # overlaps with bounded space
         if outer_polygon.intersects(expanded_bbox):
             fail_outer += 1
             continue
+
+        # overlaps with placed label candidate
         if placed_union.intersects(expanded_bbox):
             fail_placed_union += 1
             continue
+
+        # overlaps with placed outer overflow candidate
         if any(expanded_bbox.intersects(pb) for pb in placed_bboxes):
             fail_placed_bboxes += 1
             continue
+
+        # overlaps with a node of the drawing
         if any(
-            expanded_bbox.contains(Point(data["pos"]))
+            expanded_bbox.contains(Point(data['pos']))
             for node_id, data in G.nodes(data=True)
             if isinstance(node_id, int) and node_id != own_node_id
         ):
             fail_node_in_bbox += 1
             continue
 
-        # Tight bbox for self-crossing anchor check
+        # sort all anchors based on their distance to the respective node
+        iw, ih = _ink_wh(label)
+        own_ink_bbox = _label_bbox_polygon(origin_x, origin_y, iw, ih)
         own_tight_bbox = _label_bbox_polygon(origin_x, origin_y, w, h)
-
-        # 1. Compute the real geometric anchors once
         anchors = _anchor_points(origin_x, origin_y, w, h)
-
-        # 2. Sort anchors by distance from their coords to node_pt
         sorted_anchors = sorted(
             anchors.keys(),
             key=lambda name: np.hypot(
@@ -200,18 +222,19 @@ def _place_along_ray(
             anchor_pt = anchors[anchor_name]
             line = LineString([anchor_pt, node_pos])
 
-            # Reject if the binding line doubles back through our own label body.
-            line_beyond = line.difference(own_tight_bbox.boundary)
-            if line_beyond.intersects(own_tight_bbox):
+            # line crosses ink of own label
+            if own_ink_bbox.intersects(line):
                 continue
 
+            # validate binding line
             if binding_line_valid(line, own_node_id, own_label_id, G, placed, overflow_candidates, label_candidates):
                 score = _score_candidate(origin_x, origin_y, anchor_pt, node_pos, centroid, angle)
                 candidates.append((score, origin_x, origin_y, anchor_name, anchor_pt))
                 position_valid = True
-                break  # one anchor per position is enough; we'll compare positions by score
-
+                break
+        
         if not position_valid:
+
             # Record a non-self-crossing fallback in case we find nothing fully valid
             if best_binding_fallback is None:
                 for name in sorted_anchors:
@@ -233,6 +256,16 @@ def _place_along_ray(
                     print(f"    [binding] line: {list(fallback_line.coords)}")
 
             fail_binding += 1
+
+    print(
+            f"  [debug] label {own_label_id} / node {own_node_id} — "
+            f"angle {math.degrees(angle):.1f}°  exit_dist {exit_dist:.1f}  "
+            f"steps {OUTER_MAX_STEPS}  "
+            f"fail_outer={fail_outer}  fail_placed_union={fail_placed_union}  "
+            f"fail_placed_bboxes={fail_placed_bboxes}  "
+            f"fail_node_in_bbox={fail_node_in_bbox}  fail_binding={fail_binding}  "
+            f"fallback={'yes' if best_binding_fallback else 'no'}"
+        )
 
     if candidates:
         # Pick the candidate with the lowest score
@@ -260,25 +293,29 @@ def outer_overflow_labels(
     overflow_candidates: Dict[int, OverflowLabel],
     outer_nodes: List[int],
 ) -> Dict[int, OverflowLabel]:
-
+    '''
+    '''
     outer_positions = [G.nodes[n]["pos"] for n in outer_nodes]
+    # bounded space
     outer_polygon = Polygon(outer_positions)
+    # centroid of drawing
     cx, cy = outer_polygon.centroid.x, outer_polygon.centroid.y
     centroid = (cx, cy)
 
-    # Already-placed label union using expanded bboxes
+    # space blocked by label candidates
     placed_union = unary_union([
         Polygon(cand.expanded_bbox_corners)
         for cands in label_candidates.values()
         for cand in cands
     ]) if label_candidates else Polygon()
 
-    # Build gaps from adjacent outer nodes
+    # angles from centroid to each outer node
     node_angles = [
-        (_angle_from_centroid(centroid, G.nodes[n]["pos"]), n)
+        (_angle_from_centroid(centroid, G.nodes[n]['pos']), n)
         for n in outer_nodes
     ]
     node_angles.sort(key=lambda x: x[0])
+
     n_outer = len(node_angles)
 
     gaps = []
@@ -343,7 +380,7 @@ def outer_overflow_labels(
                 placed_union, w, h, node_pos,
                 overflow_label.node_id, node_id,
                 G, placed, overflow_candidates,
-                label_candidates
+                label_candidates, debug=True
             )
 
             if pos is None:
@@ -362,11 +399,11 @@ def outer_overflow_labels(
             new_cx, new_cy, anchor_name, anchor_pt = pos
 
             placed.append({
-                "label_id":     node_id,
-                "position":     (new_cx, new_cy),
-                "anchor":       anchor_name,
-                "anchor_pt":    anchor_pt,
-                "binding_line": LineString([anchor_pt, node_pos]),
+                'label_id': node_id,
+                'position': (new_cx, new_cy),
+                'anchor': anchor_name,
+                'anchor_pt': anchor_pt,
+                'binding_line': LineString([anchor_pt, node_pos]),
             })
 
             # Carve out expanded bbox for next placements
