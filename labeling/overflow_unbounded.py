@@ -160,8 +160,12 @@ def _generate_candidates(
                     continue
                 if binding_line_valid(
                     line, own_node_id, own_label_id,
-                    G, [], overflow_candidates, label_candidates
+                    G, [], overflow_candidates, label_candidates, soft=True
                 ):
+                    binder_cost = binding_line_valid(
+                        line, own_node_id, own_label_id,
+                        G, [], overflow_candidates, label_candidates
+                    )
                     # angle_offset from natural direction — penalises drifting far
                     angle_offset = abs((off + math.pi) % (2 * math.pi) - math.pi)
 
@@ -169,7 +173,8 @@ def _generate_candidates(
                     c_angle  = angle_offset * W_ANGLE
                     c_binder = line.length  * W_BINDER
                     c_align  = (1.0 - align) * 10.0
-                    cost     = c_dist + c_angle + c_binder + c_align
+                    c_binder_cross = 0.0 if binder_cost else W_BINDER_CROSS
+                    cost     = c_dist + c_angle + c_binder + c_align + c_binder_cross
                     
                     print(f"  label={own_label_id} dist={dist:.1f} "
                         f"| c_dist={c_dist:.1f} c_angle={c_angle:.1f} "

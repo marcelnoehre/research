@@ -97,6 +97,7 @@ def binding_line_valid(
     placed: List[dict],
     overflow_candidates: Dict[int, OverflowLabel],
     label_candidates: Dict[int, List[LabelCandidate]],
+    soft: bool = False
 ) -> bool:
     '''
     Validate wether a binder is valid.
@@ -112,17 +113,24 @@ def binding_line_valid(
             return False
         
         # binder conflicts with another binder
-        if 'binding_line' in rec and rec['binding_line'] is not None:
-            if line.crosses(rec['binding_line']):
-                return False
+        if not soft:
+            if 'binding_line' in rec and rec['binding_line'] is not None:
+                if line.crosses(rec['binding_line']):
+                    return False
     
     for candidates in label_candidates.values():
         for cand in candidates:
+            inner_poly = Polygon(cand.inner_bbox_corners).buffer(0)
             cand_poly = Polygon(cand.bbox_corners).buffer(0)
 
-            # binder intersects bbox of a label
-            if line.intersects(cand_poly):
-                return False
+            if soft:
+                # binder intersects bbox of a label
+                if line.intersects(inner_poly):
+                    return False
+            else:
+                # binder intersects bbox of a label
+                if line.intersects(cand_poly):
+                    return False
 
     for node_id, data in G.nodes(data=True):
         if node_id == own_node_id:
