@@ -286,10 +286,6 @@ def update_overflow_label_position(label: OverflowLabel, cx: float, cy: float, a
     '''
     Shift bbox, inner_bbox and expanded_bbox corners to a new center (cx, cy).
     '''
-    # s = (1.0 / corner_multiplier)
-    # padding = ink_h_mm * 0.75
-
-
     # ink size
     ibl, ibr, _, itl = label.inner_bbox_corners
     half_iw = (ibr[0] - ibl[0]) / 2.0
