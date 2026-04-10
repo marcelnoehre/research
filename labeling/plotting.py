@@ -37,13 +37,13 @@ def _draw_candidate(
             [ibl, ibr, itr, itl], closed=True,
             facecolor='none', edgecolor=colour,
             alpha=0.9, linestyle='-', linewidth=0.8,
-            zorder=4,
+            zorder=4, clip_on=False
         ))
         ax.add_patch(mpatches.Polygon(
             [bl, br, tr, tl], closed=True,
             facecolor=colour, edgecolor=colour,
             alpha=0.30, linestyle='-', linewidth=1.6,
-            zorder=3,
+            zorder=3, clip_on=False
         ))
         # Expanded bbox — dotted outline, clearly visible for chosen label
         ebl, ebr, etr, etl = candidate.expanded_bbox_corners
@@ -51,7 +51,7 @@ def _draw_candidate(
             [ebl, ebr, etr, etl], closed=True,
             facecolor='none', edgecolor=colour,
             alpha=0.55, linestyle=':', linewidth=1.0,
-            zorder=3,
+            zorder=3, clip_on=False
         ))
 
         # Anchor dot — full size for chosen, tiny for rejected
@@ -65,7 +65,7 @@ def _draw_candidate(
             'bottom_left':  bl,
             'bottom_right': br,
         }[candidate.anchor]
-        ax.scatter(*anchor_pt, color=colour, s=30, zorder=10, alpha=0.9)
+        ax.scatter(*anchor_pt, color=colour, s=30, zorder=10, alpha=0.9, clip_on=False)
 
     text_color = colour if colored_label_candidates else 'black'
     cx, cy = candidate.center
@@ -108,29 +108,29 @@ def _draw_overflow_candidate(
             [ibl, ibr, itr, itl], closed=True,
             facecolor='none', edgecolor=colour,
             alpha=0.9, linestyle='-', linewidth=0.8,
-            zorder=4,
+            zorder=4, clip_on=False
         ))
         ax.add_patch(mpatches.Polygon(
             [bl, br, tr, tl], closed=True,
             facecolor=colour, edgecolor=colour,
             alpha=0.30, linestyle='-', linewidth=1.6,
-            zorder=3,
+            zorder=3, clip_on=False
         ))
 
-        ax.scatter(*anchor_pt, color=colour, s=30, zorder=6, alpha=0.9)
+        ax.scatter(*anchor_pt, color=colour, s=30, zorder=6, alpha=0.9, clip_on=False)
 
         ebl, ebr, etr, etl = candidate.expanded_bbox_corners
         ax.add_patch(mpatches.Polygon(
             [ebl, ebr, etr, etl], closed=True,
             facecolor='none', edgecolor=colour,
             alpha=0.55, linestyle=':', linewidth=1.0,
-            zorder=3,
+            zorder=3, clip_on=False
         ))
 
     if candidate.anchor != 'overflow':
-        ax.scatter(*anchor_pt, color='grey', s=5, zorder=6, alpha=0.8)
+        ax.scatter(*anchor_pt, color='grey', s=5, zorder=6, alpha=0.8, clip_on=False)
         nx, ny = G.nodes[candidate.node_id]['pos']
-        ax.plot([anchor_pt[0], nx], [anchor_pt[1], ny], color='grey', linestyle='--', linewidth=0.5, alpha=0.4, zorder=4)
+        ax.plot([anchor_pt[0], nx], [anchor_pt[1], ny], color='grey', linestyle='--', linewidth=0.5, alpha=0.4, zorder=4, clip_on=False)
 
     text_color = colour if colored_label_candidates else 'black'
     cx, cy = candidate.center
