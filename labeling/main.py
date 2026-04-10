@@ -14,7 +14,7 @@ from overflow_unbounded import *
 ################################################################################ 
 # Data
 ################################################################################
-FILE = 'living_beings_and_water'
+FILE = 'convex-ordinal'
 parser = Parser()
 cxt = parser.decode_cxt(f'../data/{FILE}.cxt')
 print(cxt.print_data())

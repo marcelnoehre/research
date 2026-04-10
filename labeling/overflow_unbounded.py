@@ -1,3 +1,21 @@
+"""
+outer_overflow_global.py
+
+Replaces the greedy gap-by-gap loop in outer_overflow_labels with a two-phase
+global optimiser:
+
+  Phase 1 : generate a pool of OUTER_CANDIDATE_POOL scored candidates per label
+             independently (no cross-label state during search).
+
+  Phase 2 : build a cost matrix [labels x candidates] and solve it with the
+             Hungarian algorithm (scipy.optimize.linear_sum_assignment).
+             Pairwise overlap between chosen candidates is added to the cost
+             so the solver can trade a slight overlap on one label for a much
+             better position on another.
+
+Falls back to greedy best-first if scipy is absent or the problem is very large.
+"""
+
 import math
 import numpy as np
 import networkx as nx
@@ -16,225 +34,349 @@ from overflow_bounded import (
     binding_line_valid,
 )
 
-OUTER_STEP = 0.5
-OUTER_MAX_STEPS = 500
-WEDGE_RADIUS = 1e4
-OUTER_CANDIDATE_POOL = 12
+# ── tunables ────────────────────────────────────────────────────────────────
+OUTER_STEP          = 0.5
+OUTER_MAX_STEPS     = 500
+WEDGE_RADIUS        = 1e4
+OUTER_CANDIDATE_POOL = 1000   # top-K candidates kept per label after phase 1
+
+# cost weights
+W_DIST   = 0.08
+W_ANGLE  = 0.5    # was 15.0 — just a tiebreaker, not a real constraint
+W_BINDER = 1.5    # increase slightly since it's now the primary distance signal
+W_OVERLAP = 80.0   # pairwise overlap penalty (per overlapping pair)
+W_MISS    = 1e6    # sentinel cost for "no valid candidate"
+W_TIGHT_OVERLAP = 500.0
+W_PADDING = 25.0
+W_BINDER_CROSS = 60.0  # add to module-level tunables
+
+NUM_RAYS  = 15
+SPREAD    = math.radians(40)
+
+
+# ── helpers (unchanged from original) ───────────────────────────────────────
 
 def _ink_wh(label: OverflowLabel) -> Tuple[float, float]:
-    '''
-    Ink bbox dimensions.
-    '''
     bl, br, _, tl = label.inner_bbox_corners
     return abs(br[0] - bl[0]), abs(tl[1] - bl[1])
 
-def _angle_from_centroid(centroid: Tuple[float, float], point: Tuple[float, float]) -> float:
-    '''
-    angle from the centroid of the drawing to a node
-    [-pi, pi]
-    '''
+
+def _angle_from_centroid(centroid, point) -> float:
     return math.atan2(point[1] - centroid[1], point[0] - centroid[0])
 
 
 def _angular_gap_between(a1: float, a2: float) -> float:
-    '''
-    Measures the angular gap between two outer nodes
-    [0, 2pi]
-    '''
     return (a2 - a1) % (2 * math.pi)
 
 
-def _sort_by_node_angle(
-    assigned: List[int],
-    gap: Dict,
-    centroid: Tuple[float, float],
-    G: nx.Graph,
-    overflow_candidates: Dict[int, OverflowLabel],
-) -> List[int]:
-    '''
-    Sort assigned label ids by their node's angle from centroid within the gap,
-    so slot order matches node order and binding lines don't cross each other.
-    '''
+def _sort_by_node_angle(assigned, gap, centroid, G, overflow_candidates):
     a_left = gap['a_left']
+    def key(node_id):
+        pos = G.nodes[overflow_candidates[node_id].node_id]['pos']
+        return _angular_gap_between(a_left, _angle_from_centroid(centroid, pos))
+    return sorted(assigned, key=key)
 
-    def node_angle_in_gap(node_id):
-        node_pos = G.nodes[overflow_candidates[node_id].node_id]['pos']
-        angle = _angle_from_centroid(centroid, node_pos)
-        return _angular_gap_between(a_left, angle)
+# ── Phase 1: per-label candidate generation ──────────────────────────────────
 
-    return sorted(assigned, key=node_angle_in_gap)
-
-def _wedge_polygon(
-    centroid: Tuple[float, float],
-    a_left: float,
-    a_right: float,
-    outer_polygon: Polygon,
-    radius: float = WEDGE_RADIUS,
-) -> Polygon:
-    '''
-    Pie-slice from centroid outward between node angles a_left and a_right (CCW), minus the outer polygon.
-    '''
-    cx, cy = centroid
-    arc_steps = max(16, int(math.degrees(_angular_gap_between(a_left, a_right))))
-    arc = []
-    for i in range(arc_steps + 1):
-        t = i / arc_steps
-        angle = a_left + _angular_gap_between(a_left, a_right) * t
-        arc.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
-    wedge = Polygon([(cx, cy)] + arc + [(cx, cy)])
-    # pie slice without bounded space
-    return wedge.difference(outer_polygon)
-
-def _calculate_cost(
-    dist: float, 
-    angle_offset: float, 
-    binder_length: float, 
-    is_cluttered: bool
-) -> float:
-    '''
-    Lower is better. Adjust weights to tune the "feel" of the placement.
-    '''
-    W_DIST = 1.5      # Penalize pushing labels too far out
-    W_ANGLE = 50.0    # Penalize drifting away from the intended slot
-    W_BINDER = 2.0    # Penalize long lines
-    W_CLUTTER = 100.0 # Heavy penalty for tight spacing
-
-    cost = (dist * W_DIST) + (abs(angle_offset) * W_ANGLE) + (binder_length * W_BINDER)
-    
-    if is_cluttered:
-        cost += W_CLUTTER
-        
-    return cost
-
-def _place_in_fan(
-    central_angle: float,
-    gap_size: float,
-    centroid: Tuple[float, float],
-    outer_polygon: Polygon,
-    placed_union: Polygon,
-    w: float, 
-    h: float,
-    node_pos: Tuple[float, float],
-    own_node_id: int,
-    own_label_id: int,
-    G: nx.Graph,
-    placed: List[dict],
-    placed_binders: List[LineString],
-    overflow_candidates: Dict[int, OverflowLabel],
-    label_candidates: Dict[int, List[LabelCandidate]]
-) -> Optional[Tuple[float, float, str, Tuple]]:
-    '''
-    '''
+def _generate_candidates(
+    centroid, outer_polygon, placed_union,
+    label, node_pos, own_node_id, own_label_id,
+    G, overflow_candidates, label_candidates,
+    top_k=OUTER_CANDIDATE_POOL,
+) -> List[dict]:
+    """
+    Search all outward angles, not just a gap-derived slot.
+    Gap assignment is only used for ordering/column-block structure;
+    geometry is unconstrained here.
+    """
     cx, cy = centroid
     node_pt = np.array(node_pos)
-    label = overflow_candidates[own_label_id]
     ew, eh = _label_wh_expanded(label)
     tw, th = _label_wh(label)
     iw, ih = _ink_wh(label)
 
-    # already placed outer overflow bboxes
-    placed_bboxes = [
-        _label_bbox_polygon(*rec['position'], *_label_wh_expanded(overflow_candidates[rec['label_id']]))
-        for rec in placed if rec['label_id'] != own_label_id
-    ]
+    # natural outward angle from centroid through the node itself
+    natural_angle = _angle_from_centroid(centroid, node_pos)
 
-    num_rays = 15 
-    spread = min(math.radians(40), gap_size * 0.9)
-    offsets = np.linspace(-spread/2, spread/2, num_rays)
-    
-    scored_candidates = []
+    n_rays = 180
+    all_offsets = np.linspace(0, 2 * math.pi, n_rays, endpoint=False)
 
-    for off in offsets:
-        angle = central_angle + off
+    scored: List[Tuple[float, dict]] = []
+    best_dist_found = float('inf')
+
+    for off in all_offsets:
+        angle = natural_angle + off
         dx, dy = math.cos(angle), math.sin(angle)
-        
-        # exit distance for this specific ray
-        ray_line = LineString([(cx, cy), (cx + WEDGE_RADIUS * dx, cy + WEDGE_RADIUS * dy)])
-        intersection = outer_polygon.exterior.intersection(ray_line)
-        
-        # ray never touches outer cycle
-        if intersection.is_empty:
-            exit_dist = 0.0
-        # hits outer cycle multiple times - final exit point
-        elif hasattr(intersection, 'geoms'):
-            exit_dist = max(math.hypot(pt.x - cx, pt.y - cy) for pt in intersection.geoms)
-        # hits outer cycle at exactly one point
-        else:
-            exit_dist = math.hypot(intersection.x - cx, intersection.y - cy)
 
-        # start slightly inside to find true minimum
-        start_dist = max(0.0, exit_dist - OUTER_STEP * 2)
+        ray = LineString([(cx, cy), (cx + WEDGE_RADIUS * dx, cy + WEDGE_RADIUS * dy)])
+        ix = outer_polygon.exterior.intersection(ray)
+        if ix.is_empty:
+            exit_dist = 0.0
+        elif hasattr(ix, 'geoms'):
+            exit_dist = max(math.hypot(p.x - cx, p.y - cy) for p in ix.geoms)
+        else:
+            exit_dist = math.hypot(ix.x - cx, ix.y - cy)
+
+        start_dist = max(0.0, exit_dist)
 
         for step in range(OUTER_MAX_STEPS):
-            dist = start_dist + OUTER_STEP * step
-            
-            if scored_candidates and dist > min(c[0] for c in scored_candidates) + 50:
+            dist = start_dist + step
+            if dist > best_dist_found + 20:
                 break
 
-            origin_x, origin_y = cx + dx * dist, cy + dy * dist
-            expanded_bbox = _label_bbox_polygon(origin_x, origin_y, ew, eh)
-            tight_bbox = _label_bbox_polygon(origin_x, origin_y, tw, th) 
+            ox, oy = cx + dx * dist, cy + dy * dist
+            exp_bbox = _label_bbox_polygon(ox, oy, ew, eh)
+            tight_bbox = _label_bbox_polygon(ox, oy, tw, th)
 
-            # overlaps with bounded space
-            if outer_polygon.intersects(expanded_bbox): continue
-            # overlaps with placed label candidate
-            if placed_union.intersects(expanded_bbox): continue
-            # overlaps with placed outer overflow candidate
-            if any(tight_bbox.intersects(pb) for pb in placed_bboxes): continue
-            # overlaps binder
-            if any(tight_bbox.intersects(binder) for binder in placed_binders): continue
-            # overlaps with a node of the drawing
+            if outer_polygon.intersects(exp_bbox):
+                continue
+            if placed_union.intersects(exp_bbox):
+                continue
             if any(
-                expanded_bbox.contains(Point(data['pos']))
-                for node_id, data in G.nodes(data=True)
-                if isinstance(node_id, int) and node_id != own_node_id
+                exp_bbox.contains(Point(data['pos']))
+                for nid, data in G.nodes(data=True)
+                if isinstance(nid, int) and nid != own_node_id
             ):
                 continue
 
-            # anchor selection
-            label_center = np.array([origin_x, origin_y])
-            vector_to_node = node_pt - label_center
-            dist_to_node = np.linalg.norm(vector_to_node)
-            unit_to_node = vector_to_node / dist_to_node if dist_to_node > 0 else vector_to_node
+            label_center = np.array([ox, oy])
+            vec = node_pt - label_center
+            dist_to_node = np.linalg.norm(vec)
+            unit = vec / dist_to_node if dist_to_node > 0 else vec
+            own_ink = _label_bbox_polygon(ox, oy, iw, ih)
+            anchors = _anchor_points(ox, oy, tw, th)
 
-            own_ink_bbox = _label_bbox_polygon(origin_x, origin_y, iw, ih)
-            anchors = _anchor_points(origin_x, origin_y, tw, th)
-
-            # Score anchors by alignment (dot product)
-            # We want the anchor that points MOST towards the node
             scored_anchors = []
             for name, pt in anchors.items():
-                vector_to_anchor = np.array(pt) - label_center
-                a_norm = np.linalg.norm(vector_to_anchor)
-                alignment = np.dot(unit_to_node, vector_to_anchor / a_norm) if a_norm > 0 else -1.0
-                scored_anchors.append((alignment, name, pt))
-            
-            # Sort by alignment descending (best alignment first)
-            scored_anchors.sort(key=lambda x: x[0], reverse=True)
+                va = np.array(pt) - label_center
+                na = np.linalg.norm(va)
+                align = float(np.dot(unit, va / na)) if na > 0 else -1.0
+                scored_anchors.append((align, name, pt))
+            scored_anchors.sort(reverse=True)
 
-            for alignment, name, pt in scored_anchors:
+            for align, name, pt in scored_anchors:
                 line = LineString([pt, node_pos])
-                
-                # line crosses ink of own label
-                if own_ink_bbox.intersects(line): continue
-                # intersects with binder
-                if any(line.intersects(binder) for binder in placed_binders): continue
+                if own_ink.intersects(line):
+                    continue
+                if binding_line_valid(
+                    line, own_node_id, own_label_id,
+                    G, [], overflow_candidates, label_candidates
+                ):
+                    # angle_offset from natural direction — penalises drifting far
+                    angle_offset = abs((off + math.pi) % (2 * math.pi) - math.pi)
 
-                if binding_line_valid(line, own_node_id, own_label_id, G, placed, overflow_candidates, label_candidates):
-                    alignment_penalty = (1.0 - alignment) * 10 
-                    cost = _calculate_cost(dist, off, line.length, False) + alignment_penalty
+                    c_dist   = dist ** 1.5  * W_DIST
+                    c_angle  = angle_offset * W_ANGLE
+                    c_binder = line.length  * W_BINDER
+                    c_align  = (1.0 - align) * 10.0
+                    cost     = c_dist + c_angle + c_binder + c_align
                     
-                    scored_candidates.append((cost, (origin_x, origin_y, name, pt)))
-                    break 
-            
-            if any(c[1][0] == origin_x and c[1][1] == origin_y for c in scored_candidates):
-                break 
+                    print(f"  label={own_label_id} dist={dist:.1f} "
+                        f"| c_dist={c_dist:.1f} c_angle={c_angle:.1f} "
+                        f"c_binder={c_binder:.1f} c_align={c_align:.1f} "
+                        f"| total={cost:.1f}")
 
-    if not scored_candidates:
-        return None
+                    diversity_bonus = math.sin(off / 2) ** 2 * 5.0   # max 5 at opposite side
 
-    scored_candidates.sort(key=lambda x: x[0])
-    return scored_candidates[0][1]
+                    cost = (
+                        dist ** 1.5  * W_DIST
+                        + angle_offset * W_ANGLE
+                        + line.length  * W_BINDER
+                        + (1.0 - align) * 10.0
+                        - diversity_bonus
+                    )
+                    scored.append((cost, {
+                        'cost':        cost,
+                        'cx':          ox,
+                        'cy':          oy,
+                        'anchor_name': name,
+                        'anchor_pt':   pt,
+                        'bbox':        tight_bbox,
+                        'exp_bbox':    exp_bbox,
+                        'binder':      line,
+                    }))
+                    best_dist_found = min(best_dist_found, dist)
+                    break
+            if scored and scored[-1][1]['cx'] == ox and scored[-1][1]['cy'] == oy:
+                break
+
+    scored.sort(key=lambda x: x[0])
+    return [c for _, c in scored[:top_k]]
+
+# ── Phase 2: global assignment ────────────────────────────────────────────────
+def _build_cost_matrix(label_ids, candidates, top_k):
+    n = len(label_ids)
+    ncols = n * top_k
+    matrix = np.full((n, ncols), W_MISS)
+
+    cand_by_idx = [candidates.get(lid, []) for lid in label_ids]
+
+    # base (per-label) costs — unchanged
+    for i, lid in enumerate(label_ids):
+        for k, cand in enumerate(cand_by_idx[i]):
+            matrix[i, i * top_k + k] = cand['cost']
+
+    # pairwise conflict surcharge:
+    # if label i picks candidate k and label j's best candidate conflicts with
+    # that choice, add a penalty to matrix[i, i*top_k+k] so the solver steers
+    # label i to a position that doesn't block label j.
+    #
+    # We approximate: for each (i,j) pair, for each candidate k of label i,
+    # compute the conflict cost against the *best available* candidate of j.
+    # This is O(n² × top_k) — fine for n ≤ 200.
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            j_cands = cand_by_idx[j]
+            if not j_cands:
+                continue
+            j_best = j_cands[0]   # cheapest candidate for label j
+
+            for k, cand_i in enumerate(cand_by_idx[i]):
+                col = i * top_k + k
+                if matrix[i, col] >= W_MISS:
+                    continue
+                conflict = _conflict_cost(cand_i, j_best)
+                if conflict > 0:
+                    matrix[i, col] += conflict
+
+    return matrix
+
+
+def _solve_assignment(
+    label_ids: List[int],
+    candidates: Dict[int, List[dict]],
+    top_k: int,
+) -> Dict[int, Optional[dict]]:
+    """
+    Solve the assignment problem globally.
+
+    Strategy:
+      1. Hungarian algorithm (scipy) — exact, O(n³)
+      2. Greedy best-first — fallback when scipy absent or n > 200
+
+    After an initial assignment, runs one round of pairwise-overlap repair
+    where conflicting pairs swap to lower-cost non-overlapping alternatives.
+    """
+    n = len(label_ids)
+
+    try:
+        if n > 200:
+            raise ImportError("problem too large for Hungarian; use greedy")
+        from scipy.optimize import linear_sum_assignment
+
+        matrix = _build_cost_matrix(label_ids, candidates, top_k)
+        row_ind, col_ind = linear_sum_assignment(matrix)
+
+        assignment: Dict[int, Optional[dict]] = {}
+        for i, col in zip(row_ind, col_ind):
+            lid = label_ids[i]
+            k = col - i * top_k   # which candidate within this label's block
+            cands = candidates.get(lid, [])
+            if 0 <= k < len(cands) and matrix[i, col] < W_MISS:
+                assignment[lid] = cands[k]
+            else:
+                assignment[lid] = None
+
+    except ImportError:
+        # greedy best-first fallback
+        assignment = {}
+        placed_bboxes: List = []
+        # sort labels by number of candidates ascending (most constrained first)
+        order = sorted(label_ids, key=lambda lid: len(candidates.get(lid, [])))
+        for lid in order:
+            cands = candidates.get(lid, [])
+            chosen = None
+            for cand in cands:
+                if not any(cand['bbox'].intersects(pb) for pb in placed_bboxes):
+                    chosen = cand
+                    break
+            if chosen is None and cands:
+                chosen = cands[0]   # accept overlap rather than skip
+            if chosen:
+                placed_bboxes.append(chosen['bbox'])
+            assignment[lid] = chosen
+
+    # one round of overlap repair (works for both solvers)
+    assignment = _repair_overlaps(label_ids, candidates, assignment)
+    return assignment
+
+
+def _conflict_cost(cand_a: dict, cand_b: dict) -> float:
+    cost = 0.0
+
+    if cand_a['bbox'].intersects(cand_b['bbox']):
+        overlap_area = cand_a['bbox'].intersection(cand_b['bbox']).area
+        cost += W_TIGHT_OVERLAP + W_OVERLAP * (overlap_area / 200.0)
+
+    if cand_a['exp_bbox'].intersects(cand_b['exp_bbox']):
+        enc_area = cand_a['exp_bbox'].intersection(cand_b['exp_bbox']).area
+        cost += W_PADDING * (enc_area / 400.0)
+
+    if cand_a['binder'].intersects(cand_b['bbox']):
+        cost += W_BINDER_CROSS
+    if cand_b['binder'].intersects(cand_a['bbox']):
+        cost += W_BINDER_CROSS
+
+    if cand_a['binder'].crosses(cand_b['binder']):
+        cost += W_BINDER_CROSS * 0.5
+
+    return cost
+
+def _repair_overlaps(label_ids, candidates, assignment, max_passes=3):
+    for _ in range(max_passes):
+        conflicts = [
+            (lid_a, lid_b)
+            for i, lid_a in enumerate(label_ids)
+            for lid_b in label_ids[i + 1:]
+            if assignment.get(lid_a) and assignment.get(lid_b)
+            and _conflict_cost(assignment[lid_a], assignment[lid_b]) > 0.0
+        ]
+        if not conflicts:
+            break
+
+        made_progress = False
+        for lid_a, lid_b in conflicts:
+            ca, cb = assignment[lid_a], assignment[lid_b]
+            if _conflict_cost(ca, cb) == 0.0:
+                continue  # already resolved by a prior swap this pass
+
+            # tight bbox overlap surviving to repair = no clean solution exists
+            if ca['bbox'].intersects(cb['bbox']):
+                print(f"Warning: unresolvable tight bbox overlap between "
+                    f"labels {lid_a} and {lid_b} — increase OUTER_CANDIDATE_POOL "
+                    f"or OUTER_MAX_STEPS")
+
+            resolved = False
+            for lid_fix, lid_keep in [(lid_a, lid_b), (lid_b, lid_a)]:
+                c_keep = assignment[lid_keep]
+                for alt in candidates.get(lid_fix, []):
+                    if alt is assignment[lid_fix]:
+                        continue
+                    # must resolve this conflict
+                    if _conflict_cost(alt, c_keep) > 0.0:
+                        continue
+                    # must not introduce new conflicts
+                    if any(
+                        _conflict_cost(alt, assignment[o]) > 0.0
+                        for o in label_ids
+                        if o != lid_fix and assignment.get(o) is not None
+                    ):
+                        continue
+                    assignment[lid_fix] = alt
+                    made_progress = True
+                    resolved = True
+                    break
+                if resolved:
+                    break
+
+        if not made_progress:
+            break  # no swap helped — accept remaining conflicts
+
+    return assignment
+
+# ── public entry point ────────────────────────────────────────────────────────
 
 def outer_overflow_labels(
     G: nx.Graph,
@@ -242,127 +384,105 @@ def outer_overflow_labels(
     overflow_candidates: Dict[int, OverflowLabel],
     outer_nodes: List[int],
 ) -> Dict[int, OverflowLabel]:
-    '''
-    '''
-    outer_positions = [G.nodes[n]["pos"] for n in outer_nodes]
-    # bounded space
-    outer_polygon = Polygon(outer_positions)
-    # centroid of drawing
-    cx, cy = outer_polygon.centroid.x, outer_polygon.centroid.y
-    centroid = (cx, cy)
+    """
+    Two-phase global placement of outer overflow labels.
 
-    # space blocked by label candidates
+    Phase 1: generate candidate pools per label (no cross-label state).
+    Phase 2: assign globally via Hungarian min-cost matching + overlap repair.
+    """
+    outer_positions = [G.nodes[n]["pos"] for n in outer_nodes]
+    outer_polygon   = Polygon(outer_positions)
+    cx, cy          = outer_polygon.centroid.x, outer_polygon.centroid.y
+    centroid        = (cx, cy)
+
+    # space already blocked by inner (bounded) label candidates
     placed_union = unary_union([
         Polygon(cand.expanded_bbox_corners)
         for cands in label_candidates.values()
         for cand in cands
     ]) if label_candidates else Polygon()
 
-    # angles from centroid to each outer node
-    node_angles = [
-        (_angle_from_centroid(centroid, G.nodes[n]['pos']), n)
-        for n in outer_nodes
-    ]
-    node_angles.sort(key=lambda x: x[0])
-
+    # angular gaps between outer boundary nodes
+    node_angles = sorted(
+        [(_angle_from_centroid(centroid, G.nodes[n]['pos']), n) for n in outer_nodes],
+        key=lambda x: x[0]
+    )
     n_outer = len(node_angles)
-
     gaps = []
     for i in range(n_outer):
-        a_left, node_left = node_angles[i]
+        a_left,  node_left  = node_angles[i]
         a_right, node_right = node_angles[(i + 1) % n_outer]
         gap_size = _angular_gap_between(a_left, a_right)
-        wedge = _wedge_polygon(centroid, a_left, a_right, outer_polygon)
         gaps.append({
-            "a_left":     a_left,
-            "a_right":    a_right,
-            "gap_size":   gap_size,
-            "node_left":  node_left,
-            "node_right": node_right,
-            "wedge":      wedge,
-            "assigned":   [],
+            "a_left": a_left, "a_right": a_right,
+            "gap_size": gap_size,
+            "node_left": node_left, "node_right": node_right,
+            "assigned": [],
         })
 
-    # Assign unplaced overflow labels to their natural gap
-    unplaced = {
-        nid: ol for nid, ol in overflow_candidates.items()
-        if ol.anchor == 'overflow'
-    }
-
-    for node_id, overflow_label in unplaced.items():
-        lx, ly = overflow_label.center
-        outward_angle = _angle_from_centroid(centroid, (lx, ly))
-
-        best_gap = None
-        best_size = -1.0
-        for gap in gaps:
-            into = _angular_gap_between(gap["a_left"], outward_angle)
-            if into <= gap["gap_size"] and gap["gap_size"] > best_size:
-                best_size = gap["gap_size"]
-                best_gap = gap
-
-        if best_gap is None:
-            best_gap = max(gaps, key=lambda g: g["gap_size"])
-
+    # assign unplaced overflow labels to their natural gap
+    unplaced = {nid: ol for nid, ol in overflow_candidates.items() if ol.anchor == 'overflow'}
+    for node_id, ol in unplaced.items():
+        outward_angle = _angle_from_centroid(centroid, ol.center)
+        best_gap = max(
+            (g for g in gaps if _angular_gap_between(g["a_left"], outward_angle) <= g["gap_size"]),
+            key=lambda g: g["gap_size"],
+            default=max(gaps, key=lambda g: g["gap_size"]),
+        )
         best_gap["assigned"].append(node_id)
 
-    # Place labels gap by gap
-    placed: List[dict] = []
-    placed_binders = []
-    result_map = dict(overflow_candidates)
+    # ── Phase 1: generate candidates per gap ─────────────────────────────────
+    all_candidates: Dict[int, List[dict]] = {}
 
     for gap in gaps:
         if not gap["assigned"]:
             continue
-
-        assigned = _sort_by_node_angle(gap["assigned"], gap, centroid, G, overflow_candidates)
-        n = len(assigned)
-
-        for i, node_id in enumerate(assigned):
-            slot_angle = gap["a_left"] + gap["gap_size"] * (i + 1) / (n + 1)
-
-            overflow_label = overflow_candidates[node_id]
-            w, h = _label_wh(overflow_label)
-            node_pos = G.nodes[overflow_label.node_id]["pos"]
-
-            pos = _place_in_fan(
-                slot_angle, 
-                gap["gap_size"],
-                centroid, 
-                outer_polygon,
-                placed_union, 
-                w, h, 
-                node_pos,
-                overflow_label.node_id, 
-                node_id,
-                G, placed, placed_binders,
-                overflow_candidates,
-                label_candidates
+        assigned = _sort_by_node_angle(
+            gap["assigned"], gap, centroid, G, overflow_candidates
+        )
+        for node_id in assigned:
+            ol = overflow_candidates[node_id]
+            node_pos = G.nodes[ol.node_id]["pos"]
+            cands = _generate_candidates(
+                centroid            = centroid,
+                outer_polygon       = outer_polygon,
+                placed_union        = placed_union,
+                label               = ol,
+                node_pos            = node_pos,
+                own_node_id         = ol.node_id,
+                own_label_id        = node_id,
+                G                   = G,
+                overflow_candidates = overflow_candidates,
+                label_candidates    = label_candidates,
+                top_k               = OUTER_CANDIDATE_POOL,
             )
+            all_candidates[node_id] = cands
+            if not cands:
+                print(f"Warning: no candidates generated for label {node_id}")
 
-            if pos is None:
-                print(f"Warning: could not place overflow label for node {node_id} "
-                      f"in gap ({gap['node_left']}, {gap['node_right']})")
-                continue
-            print(f'Success: placed label for node {node_id}')
+    # ── Phase 2: global assignment ────────────────────────────────────────────
+    label_ids  = list(all_candidates.keys())
+    assignment = _solve_assignment(label_ids, all_candidates, OUTER_CANDIDATE_POOL)
 
-            new_cx, new_cy, anchor_name, anchor_pt = pos
+    for node_id, chosen in assignment.items():
+        pool = all_candidates[node_id]
+        if chosen and pool and chosen is not pool[0]:
+            print(f"label={node_id} picked rank={pool.index(chosen)+1}/{len(pool)} "
+                f"(best={pool[0]['cost']:.1f} chosen={chosen['cost']:.1f}) "
+                f"— displaced by conflict")
 
-            binder = LineString([anchor_pt, node_pos])
-            placed.append({
-                'label_id': node_id,
-                'position': (new_cx, new_cy),
-                'anchor': anchor_name,
-                'anchor_pt': anchor_pt,
-                'binding_line': binder,
-            })
-            placed_binders.append(binder)
+    # ── Apply results ─────────────────────────────────────────────────────────
+    result_map = dict(overflow_candidates)
 
-            # Carve out expanded bbox for next placements
-            ew, eh = _label_wh_expanded(overflow_label)
-            placed_union = placed_union.union(_label_bbox_polygon(new_cx, new_cy, ew, eh))
+    for node_id, chosen in assignment.items():
+        ol = overflow_candidates[node_id]
+        if chosen is None:
+            print(f"Warning: could not place overflow label for node {node_id}")
+            continue
 
-            update_overflow_label_position(overflow_label, new_cx, new_cy, anchor_name)
-            result_map[node_id] = overflow_label
+        print(f"Success: placed label for node {node_id} "
+              f"(cost={chosen['cost']:.2f})")
+        update_overflow_label_position(ol, chosen['cx'], chosen['cy'], chosen['anchor_name'])
+        result_map[node_id] = ol
 
     return result_map
