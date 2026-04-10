@@ -88,7 +88,8 @@ def filter_candidates_by_edges(
         for candidate in node_candidates:
             ibl, _, itr, _ = candidate.inner_bbox_corners
             inner_shape = box(ibl[0], ibl[1], itr[0], itr[1])
-            if not any(inner_shape.intersects(line) for line in lines):
+            padded_shape = inner_shape.buffer(0.01)
+            if not any(padded_shape.intersects(line) for line in lines):
                 surviving.append(candidate)
 
         filtered_candidates[node] = surviving

@@ -14,7 +14,7 @@ from overflow_unbounded import *
 ################################################################################ 
 # Data
 ################################################################################
-FILE = 'convex-ordinal'
+FILE = 'car'
 parser = Parser()
 cxt = parser.decode_cxt(f'../data/{FILE}.cxt')
 print(cxt.print_data())
