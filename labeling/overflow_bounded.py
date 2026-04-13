@@ -97,7 +97,8 @@ def binding_line_valid(
     placed: List[dict],
     overflow_candidates: Dict[int, OverflowLabel],
     label_candidates: Dict[int, List[LabelCandidate]],
-    soft: bool = False
+    soft: bool = False,
+    max_edge_crossings: int = -1
 ) -> bool:
     '''
     Validate wether a binder is valid.
@@ -142,6 +143,17 @@ def binding_line_valid(
         # 0.1 = radius of plotted nodes
         if line.distance(Point(data['pos'])) < 0.15:
             return False
+        
+    if max_edge_crossings >= 0:
+        # restrict the number of edge crossings 
+        crossings = 0
+        for u, v in G.edges():
+            edge_line = LineString([G.nodes[u]['pos'], G.nodes[v]['pos']])
+            if line.crosses(edge_line):
+                crossings += 1
+                
+            if crossings > max_edge_crossings:
+                return False
 
     # valid - no conflict found
     return True
@@ -276,7 +288,7 @@ def _find_valid_position(
             line = LineString([anchor_pt, node_pos])
             
             # keep if valid
-            if binding_line_valid(line, own_node_id, own_label_id, G, placed, overflow_candidates, label_candidates):
+            if binding_line_valid(line, own_node_id, own_label_id, G, placed, overflow_candidates, label_candidates, max_edge_crossings=1):
                 return cx, cy, anchor_name, anchor_pt
 
     # no valid position found
