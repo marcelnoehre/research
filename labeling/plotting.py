@@ -58,8 +58,8 @@ def _draw_candidate(
         anchor_pt = {
             'top':          ((tl[0] + tr[0]) / 2, tl[1]),
             'bottom':       ((bl[0] + br[0]) / 2, bl[1]),
-            'left':         (tl[0], (tl[1] + bl[1]) / 2),
-            'right':        (tr[0], (tr[1] + br[1]) / 2),
+            'left':         (tl[0] - 0.05, (tl[1] + bl[1]) / 2),
+            'right':        (tr[0] + 0.05, (tr[1] + br[1]) / 2),
             'top_left':     tl,
             'top_right':    tr,
             'bottom_left':  bl,
@@ -94,8 +94,8 @@ def _draw_overflow_candidate(
     anchor_pt = {
         'top':          ((tl[0] + tr[0]) / 2, tl[1]),
         'bottom':       ((bl[0] + br[0]) / 2, bl[1]),
-        'left':         (tl[0], (tl[1] + bl[1]) / 2),
-        'right':        (tr[0], (tr[1] + br[1]) / 2),
+        'left':         (tl[0] - 0.05, (tl[1] + bl[1]) / 2),
+        'right':        (tr[0] + 0.05, (tr[1] + br[1]) / 2),
         'top_left':     tl,
         'top_right':    tr,
         'bottom_left':  bl,
