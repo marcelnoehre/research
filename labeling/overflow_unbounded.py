@@ -39,19 +39,18 @@ from overflow_bounded import (
 OUTER_STEP          = 0.5
 OUTER_MAX_STEPS     = 500
 WEDGE_RADIUS        = 1e4
-OUTER_CANDIDATE_POOL = 100   # top-K candidates kept per label after phase 1
+OUTER_CANDIDATE_POOL = 500   # top-K candidates kept per label after phase 1
 
 # cost weights
-W_DIST   = 0.08
-W_ALIGN = 10.0
-W_ANGLE  = 0.5 
+W_ALIGN = 2.0
+W_ANGLE  = 1.0
 W_BINDER = 1.5    # increase slightly since it's now the primary distance signal
-W_OVERLAP = 80.0   # pairwise overlap penalty (per overlapping pair)
+W_OVERLAP = 200.0   # pairwise overlap penalty (per overlapping pair)
 W_MISS    = 1e6    # sentinel cost for "no valid candidate"
 W_TIGHT_OVERLAP = 500.0
 W_PADDING = 25.0
-W_BINDER_CROSS = 60.0  # add to module-level tunables
-W_DIVERSITY_MAX = 2.0
+W_BINDER_CROSS = 100.0  # add to module-level tunables
+W_DENSITY_WEIGHT = 50.0
 
 def _generate_candidates_task(args: dict) -> tuple[int, list[dict]]:
     node_id = args["node_id"]
@@ -101,18 +100,29 @@ def _generate_candidates(
     top_k=OUTER_CANDIDATE_POOL,
 ) -> List[dict]:
     """
-    Search all outward angles, not just a gap-derived slot.
-    Gap assignment is only used for ordering/column-block structure;
-    geometry is unconstrained here.
+    Local Orthogonal Candidate Generation.
+    Finds the nearest boundary edge for the node and searches for placements
+    normal to that edge, drifting only to avoid collisions.
     """
-    cx, cy = centroid
+    node_pt_shapely = Point(node_pos)
     node_pt = np.array(node_pos)
+    
+    # 1. LOCAL GEOMETRY: Find the natural exit point on the boundary
+    # We use the exterior linear ring for the projection
+    boundary = outer_polygon.exterior
+    proj_dist = boundary.project(node_pt_shapely)
+    closest_pt_on_boundary = boundary.interpolate(proj_dist)
+    
+    # Origin of search rays is the boundary exit point
+    rx, ry = closest_pt_on_boundary.x, closest_pt_on_boundary.y
+    
+    # 2. NATURAL ANGLE: The vector from the node through its closest exit point
+    # This ensures the label 'pops out' perpendicularly to the local edge.
+    natural_angle = math.atan2(ry - node_pos[1], rx - node_pos[0])
+
     ew, eh = _label_wh_expanded(label)
     tw, th = _label_wh(label)
     iw, ih = _ink_wh(label)
-
-    # natural outward angle from centroid through the node itself
-    natural_angle = _angle_from_centroid(centroid, node_pos)
 
     n_rays = 180
     all_offsets = np.linspace(0, 2 * math.pi, n_rays, endpoint=False)
@@ -123,23 +133,14 @@ def _generate_candidates(
         angle = natural_angle + off
         dx, dy = math.cos(angle), math.sin(angle)
 
-        ray = LineString([(cx, cy), (cx + WEDGE_RADIUS * dx, cy + WEDGE_RADIUS * dy)])
-        ix = outer_polygon.exterior.intersection(ray)
-        if ix.is_empty:
-            exit_dist = 0.0
-        elif hasattr(ix, 'geoms'):
-            exit_dist = max(math.hypot(p.x - cx, p.y - cy) for p in ix.geoms)
-        else:
-            exit_dist = math.hypot(ix.x - cx, ix.y - cy)
-
-        start_dist = max(0.0, exit_dist)
-
         found_for_this_ray = 0
         blocked_anchors = set()
+        
+        # We step outward starting from the boundary point
         for step in range(OUTER_MAX_STEPS):
-            dist = start_dist + step
+            dist = step * OUTER_STEP
 
-            ox, oy = cx + dx * dist, cy + dy * dist
+            ox, oy = rx + dx * dist, ry + dy * dist
             exp_bbox = _label_bbox_polygon(ox, oy, ew, eh)
             tight_bbox = _label_bbox_polygon(ox, oy, tw, th)
 
@@ -163,7 +164,6 @@ def _generate_candidates(
 
             scored_anchors = []
             for name, pt in anchors.items():
-                # Skip if previously blocked on this ray
                 if name in blocked_anchors:
                     continue
                 va = np.array(pt) - label_center
@@ -189,21 +189,24 @@ def _generate_candidates(
                     line, own_node_id, own_label_id,
                     G, [], overflow_candidates, label_candidates
                 )
-                # angle_offset from natural direction — penalises drifting far
-                angle_offset = abs((off + math.pi) % (2 * math.pi) - math.pi)
 
-                c_dist   = dist ** 1.5  * W_DIST
-                c_angle  = angle_offset * W_ANGLE
-                c_binder = line.length  * W_BINDER
-                c_align  = (1.0 - align) * W_ALIGN
+                # Normalized angle offset (-pi to pi)
+                angle_offset = abs((off + math.pi) % (2 * math.pi) - math.pi)
+                nodes_in_sector = sum(1 for nid, data in G.nodes(data=True) 
+                     if abs(_angle_from_centroid(centroid, data['pos']) - angle) < 0.2)
+
+                c_angle = angle_offset * W_ANGLE
+                c_binder = line.length * W_BINDER
+                c_align = (1.0 - align) * W_ALIGN
                 c_binder_cross = 0.0 if binder_cost else W_BINDER_CROSS
-                c_diversity = math.cos(off / 2) ** 2 * W_DIVERSITY_MAX
-                cost     = c_dist + c_angle + c_binder + c_align + c_binder_cross + c_diversity
-                
+                c_density = nodes_in_sector * W_DENSITY_WEIGHT
+
+                cost = c_angle + c_binder + c_align + c_binder_cross + c_density
+
                 print(f"  label={own_label_id} dist={dist:.1f} "
-                    f"| c_dist={c_dist:.1f} c_angle={c_angle:.1f} "
+                    f"| c_angle={c_angle:.1f} "
                     f"c_binder={c_binder:.1f} c_align={c_align:.1f} "
-                    f"| c_binder_cross={c_binder_cross:.1f} c_diversity={c_diversity:.1f} "
+                    f"| c_binder_cross={c_binder_cross:.1f} c_density={c_density:.1f} "
                     f"| total={cost:.1f}")
 
                 scored.append((cost, {
@@ -218,13 +221,10 @@ def _generate_candidates(
                 }))
 
                 found_for_this_ray += 1
-                break # best anchor for this position found
+                break 
 
-            # enough candidates found for this ray, or all anchors blocked, move to next ray
-            if found_for_this_ray >= 3 or len(scored_anchors) <= len(blocked_anchors):
+            if found_for_this_ray >= 5 or len(scored_anchors) <= len(blocked_anchors):
                 break
-                
-
     scored.sort(key=lambda x: x[0])
     return [c for _, c in scored[:top_k]]
 

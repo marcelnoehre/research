@@ -136,7 +136,7 @@ def adjust_binders(
         unbounded_overflow_labels: List[int],
         outer_nodes: List,
         step_size: float = 0.1,
-        min_binder_length: float = 0.25
+        min_binder_length: float = 0.5
     ):
     outer_positions = [G.nodes[n]['pos'] for n in outer_nodes]
     outer_polygon   = Polygon(outer_positions)
