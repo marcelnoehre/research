@@ -1,4 +1,5 @@
 from collections import defaultdict
+import numpy as np
 import copy
 from itertools import combinations
 import networkx as nx
@@ -156,7 +157,7 @@ def filter_candidates_by_neighbor_direction(
     
     return filtered_candidates
 
-def filter_optimize_gaps(
+def filter_optimal_space(
         G: nx.Graph,
         candidates: Dict[int, List[LabelCandidate]],
         bounded_faces: List[List],
@@ -210,28 +211,45 @@ def filter_optimize_gaps(
 
     for node in outside:
         idx = node_to_idx[node]
-
         pos_prev = _get_nearest_active(idx, -1, clockwise_nodes, candidates, G)
         pos_next = _get_nearest_active(idx, 1, clockwise_nodes, candidates, G)
 
         best_candidate = None
-        max_min_gap = -1
+        min_orthogonal_dist = float('inf')
 
-        for cand in candidates[node]:
-            pt = Point(cand.center)
+        if pos_prev and pos_next:
+            # Convert to numpy arrays for vector math
+            p1 = np.array([pos_prev.x, pos_prev.y])
+            p2 = np.array([pos_next.x, pos_next.y])
             
-            # Calculate distances only if a valid neighbor was found
-            d_prev = pt.distance(pos_prev) if pos_prev else float('inf')
-            d_next = pt.distance(pos_next) if pos_next else float('inf')
+            # The line segment connecting neighbors
+            chord_vec = p2 - p1
+            chord_len_sq = np.dot(chord_vec, chord_vec)
             
-            min_gap = min(d_prev, d_next)
-            
-            if min_gap > max_min_gap:
-                max_min_gap = min_gap
-                best_candidate = cand
+            for cand in candidates[node]:
+                pt_vec = np.array([cand.center[0], cand.center[1]])
                 
-        if best_candidate:
-            filtered_candidates[node] = [best_candidate]
+                # Find the projection of the candidate onto the chord
+                # t is the position along the line (0.5 is perfectly centered)
+                if chord_len_sq == 0:
+                    t = 0
+                else:
+                    t = np.dot(pt_vec - p1, chord_vec) / chord_len_sq
+                
+                # 1. We want t to be near 0.5 (centered between neighbors)
+                centering_error = abs(t - 0.5)
+                
+                projection = p1 + t * chord_vec
+                dist_to_chord = np.linalg.norm(pt_vec - projection)
+                
+                score = centering_error - (0.1 * dist_to_chord) 
+                
+                if score < min_orthogonal_dist:
+                    min_orthogonal_dist = score
+                    best_candidate = cand
+
+            if best_candidate:
+                filtered_candidates[node] = [best_candidate]
 
     for node in inside:
         points = [Point(candidate.center) for candidate in candidates[node]]
@@ -242,15 +260,15 @@ def filter_optimize_gaps(
         ]
         all_matching_face_indices = [i for sublist in node_face_matches for i in sublist]
 
-        min_face_idx = min(all_matching_face_indices, key=lambda i: face_polygons[i].area)
+        max_face_idx = max(all_matching_face_indices, key=lambda i: face_polygons[i].area)
 
         tied_candidates = [
             (cand_idx, candidates[node][cand_idx]) 
             for cand_idx, face_indices in enumerate(node_face_matches)
-            if min_face_idx in face_indices
+            if max_face_idx in face_indices
         ]
 
-        face_centroid = face_polygons[min_face_idx].centroid
+        face_centroid = face_polygons[max_face_idx].centroid
         best_candidate = min(
             tied_candidates, 
             key=lambda item: Point(item[1].center).distance(face_centroid)
