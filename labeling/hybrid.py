@@ -331,8 +331,23 @@ def hybrid_label_placement(
         for (nid, lt), cands in typed.items()
         for ci in range(len(cands))
     }
+
+    anchor_order = ['left', 'top', 'top_left', 'bottom_left', 'bottom', 'right', 'top_right', 'bottom_right']
+    anchor_rank = {anchor: i for i, anchor in enumerate(anchor_order)}
+    default_rank = len(anchor_order)
+
+    def feature_priority_score(fk: FKey):
+        best_rank = min(anchor_rank.get(c.anchor, default_rank) for c in typed[fk])
+        return (best_rank, fk[0])
     
-    chosen: Dict[FKey, Optional[int]] = {fk: None for fk in typed}
+    sorted_fkeys = sorted(typed.keys(), key=feature_priority_score)
+    
+    chosen: Dict[FKey, Optional[int]] = {fk: None for fk in sorted_fkeys}
+    active: Dict[CKey, bool] = {
+        (fk[0], fk[1], ci): True
+        for fk in sorted_fkeys
+        for ci in range(len(typed[fk]))
+    }
     conflicts = _build_conflict_index(typed)
 
     # Phase I: Pruning
@@ -372,18 +387,13 @@ def hybrid_label_placement(
                     chosen[fk] = ci
                     break
 
-    # FINAL CONSTRUCTION: Greedy Collector with Feature-Awareness
     chosen_map: Dict[int, List[LabelCandidate]] = {nid: [] for nid in candidates}
-    
-    # Store tuples of (LabelCandidate, FKey) to know where each box came from
     placed_entries: List[Tuple[LabelCandidate, FKey]] = []
 
-    def is_blocked(cand: LabelCandidate, current_fk: FKey) -> bool:
+    def is_blocked(cand, current_fk):
         for p_cand, p_fk in placed_entries:
-            # If they are from DIFFERENT features, check for overlap
-            if current_fk != p_fk:
-                if _boxes_overlap(cand, p_cand):
-                    return True
+            if current_fk != p_fk and _boxes_overlap(cand, p_cand):
+                return True
         return False
 
     # 1. Place "Chosen" candidates first
@@ -395,18 +405,17 @@ def hybrid_label_placement(
                 placed_entries.append((cand, fk))
 
     # 2. Place all other active alternatives
-    for (nid, lt, ci), is_active in active.items():
-        if not is_active: continue
+    remaining_ckeys = sorted(
+        [k for k, v in active.items() if v],
+        key=lambda k: anchor_rank.get(typed[(k[0], k[1])][k[2]].anchor, default_rank)
+    )
+    for ck in remaining_ckeys:
+        nid, lt, ci = ck
         fk = (nid, lt)
         cand = typed[fk][ci]
-        
-        # Don't add the same object twice
-        if cand in chosen_map[nid]: continue
-        
-        if not is_blocked(cand, fk):
+        if cand not in chosen_map[nid] and not is_blocked(cand, fk):
             chosen_map[nid].append(cand)
             placed_entries.append((cand, fk))
-            log.append(f'  Added alternative: {fk} index {ci}')
 
     if verbose:
         for line in log: print(line)
