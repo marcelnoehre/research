@@ -19,6 +19,7 @@ Falls back to greedy best-first if scipy is absent or the problem is very large.
 import math
 import numpy as np
 import networkx as nx
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from shapely.geometry import LineString, Point, Polygon
 from shapely import unary_union
@@ -38,21 +39,36 @@ from overflow_bounded import (
 OUTER_STEP          = 0.5
 OUTER_MAX_STEPS     = 500
 WEDGE_RADIUS        = 1e4
-OUTER_CANDIDATE_POOL = 1000   # top-K candidates kept per label after phase 1
+OUTER_CANDIDATE_POOL = 100   # top-K candidates kept per label after phase 1
 
 # cost weights
 W_DIST   = 0.08
-W_ANGLE  = 0.5    # was 15.0 — just a tiebreaker, not a real constraint
+W_ALIGN = 10.0
+W_ANGLE  = 0.5 
 W_BINDER = 1.5    # increase slightly since it's now the primary distance signal
 W_OVERLAP = 80.0   # pairwise overlap penalty (per overlapping pair)
 W_MISS    = 1e6    # sentinel cost for "no valid candidate"
 W_TIGHT_OVERLAP = 500.0
 W_PADDING = 25.0
 W_BINDER_CROSS = 60.0  # add to module-level tunables
+W_DIVERSITY_MAX = 2.0
 
-NUM_RAYS  = 15
-SPREAD    = math.radians(40)
-
+def _generate_candidates_task(args: dict) -> tuple[int, list[dict]]:
+    node_id = args["node_id"]
+    cands = _generate_candidates(
+        centroid            = args["centroid"],
+        outer_polygon       = args["outer_polygon"],
+        placed_union        = args["placed_union"],
+        label               = args["label"],
+        node_pos            = args["node_pos"],
+        own_node_id         = args["own_node_id"],
+        own_label_id        = args["own_label_id"],
+        G                   = args["G"],
+        overflow_candidates = args["overflow_candidates"],
+        label_candidates    = args["label_candidates"],
+        top_k               = args["top_k"],
+    )
+    return node_id, cands
 
 # ── helpers (unchanged from original) ───────────────────────────────────────
 
@@ -102,7 +118,6 @@ def _generate_candidates(
     all_offsets = np.linspace(0, 2 * math.pi, n_rays, endpoint=False)
 
     scored: List[Tuple[float, dict]] = []
-    best_dist_found = float('inf')
 
     for off in all_offsets:
         angle = natural_angle + off
@@ -119,10 +134,10 @@ def _generate_candidates(
 
         start_dist = max(0.0, exit_dist)
 
+        found_for_this_ray = 0
+        blocked_anchors = set()
         for step in range(OUTER_MAX_STEPS):
             dist = start_dist + step
-            if dist > best_dist_found + 20:
-                break
 
             ox, oy = cx + dx * dist, cy + dy * dist
             exp_bbox = _label_bbox_polygon(ox, oy, ew, eh)
@@ -148,6 +163,9 @@ def _generate_candidates(
 
             scored_anchors = []
             for name, pt in anchors.items():
+                # Skip if previously blocked on this ray
+                if name in blocked_anchors:
+                    continue
                 va = np.array(pt) - label_center
                 na = np.linalg.norm(va)
                 align = float(np.dot(unit, va / na)) if na > 0 else -1.0
@@ -157,53 +175,55 @@ def _generate_candidates(
             for align, name, pt in scored_anchors:
                 line = LineString([pt, node_pos])
                 if own_ink.intersects(line):
+                    blocked_anchors.add(name)
                     continue
-                if binding_line_valid(
+
+                if not binding_line_valid(
                     line, own_node_id, own_label_id,
                     G, [], overflow_candidates, label_candidates, soft=True
                 ):
-                    binder_cost = binding_line_valid(
-                        line, own_node_id, own_label_id,
-                        G, [], overflow_candidates, label_candidates
-                    )
-                    # angle_offset from natural direction — penalises drifting far
-                    angle_offset = abs((off + math.pi) % (2 * math.pi) - math.pi)
+                    blocked_anchors.add(name)
+                    continue
 
-                    c_dist   = dist ** 1.5  * W_DIST
-                    c_angle  = angle_offset * W_ANGLE
-                    c_binder = line.length  * W_BINDER
-                    c_align  = (1.0 - align) * 10.0
-                    c_binder_cross = 0.0 if binder_cost else W_BINDER_CROSS
-                    cost     = c_dist + c_angle + c_binder + c_align + c_binder_cross
-                    
-                    print(f"  label={own_label_id} dist={dist:.1f} "
-                        f"| c_dist={c_dist:.1f} c_angle={c_angle:.1f} "
-                        f"c_binder={c_binder:.1f} c_align={c_align:.1f} "
-                        f"| total={cost:.1f}")
+                binder_cost = binding_line_valid(
+                    line, own_node_id, own_label_id,
+                    G, [], overflow_candidates, label_candidates
+                )
+                # angle_offset from natural direction — penalises drifting far
+                angle_offset = abs((off + math.pi) % (2 * math.pi) - math.pi)
 
-                    diversity_bonus = math.sin(off / 2) ** 2 * 5.0   # max 5 at opposite side
+                c_dist   = dist ** 1.5  * W_DIST
+                c_angle  = angle_offset * W_ANGLE
+                c_binder = line.length  * W_BINDER
+                c_align  = (1.0 - align) * W_ALIGN
+                c_binder_cross = 0.0 if binder_cost else W_BINDER_CROSS
+                c_diversity = math.cos(off / 2) ** 2 * W_DIVERSITY_MAX
+                cost     = c_dist + c_angle + c_binder + c_align + c_binder_cross + c_diversity
+                
+                print(f"  label={own_label_id} dist={dist:.1f} "
+                    f"| c_dist={c_dist:.1f} c_angle={c_angle:.1f} "
+                    f"c_binder={c_binder:.1f} c_align={c_align:.1f} "
+                    f"| c_binder_cross={c_binder_cross:.1f} c_diversity={c_diversity:.1f} "
+                    f"| total={cost:.1f}")
 
-                    cost = (
-                        dist ** 1.5  * W_DIST
-                        + angle_offset * W_ANGLE
-                        + line.length  * W_BINDER
-                        + (1.0 - align) * 10.0
-                        - diversity_bonus
-                    )
-                    scored.append((cost, {
-                        'cost':        cost,
-                        'cx':          ox,
-                        'cy':          oy,
-                        'anchor_name': name,
-                        'anchor_pt':   pt,
-                        'bbox':        tight_bbox,
-                        'exp_bbox':    exp_bbox,
-                        'binder':      line,
-                    }))
-                    best_dist_found = min(best_dist_found, dist)
-                    break
-            if scored and scored[-1][1]['cx'] == ox and scored[-1][1]['cy'] == oy:
+                scored.append((cost, {
+                    'cost':        cost,
+                    'cx':          ox,
+                    'cy':          oy,
+                    'anchor_name': name,
+                    'anchor_pt':   pt,
+                    'bbox':        tight_bbox,
+                    'exp_bbox':    exp_bbox,
+                    'binder':      line,
+                }))
+
+                found_for_this_ray += 1
+                break # best anchor for this position found
+
+            # enough candidates found for this ray, or all anchors blocked, move to next ray
+            if found_for_this_ray >= 3 or len(scored_anchors) <= len(blocked_anchors):
                 break
+                
 
     scored.sort(key=lambda x: x[0])
     return [c for _, c in scored[:top_k]]
@@ -213,41 +233,30 @@ def _build_cost_matrix(label_ids, candidates, top_k):
     n = len(label_ids)
     ncols = n * top_k
     matrix = np.full((n, ncols), W_MISS)
-
     cand_by_idx = [candidates.get(lid, []) for lid in label_ids]
 
-    # base (per-label) costs — unchanged
     for i, lid in enumerate(label_ids):
-        for k, cand in enumerate(cand_by_idx[i]):
-            matrix[i, i * top_k + k] = cand['cost']
+        for k, cand_i in enumerate(cand_by_idx[i]):
+            base_cost = cand_i['cost']
+            conflict_penalty = 0.0
+            
+            # Compare against ALL other labels
+            for j in range(n):
+                if i == j: continue
+                j_cands = cand_by_idx[j]
+                if not j_cands: continue
+                
+                # Check conflict against label j's top 3 options, not just index 0
+                # This prevents the "Shadow" effect
+                lookahead = min(3, len(j_cands))
+                best_j_conflict = min(
+                    _conflict_cost(cand_i, j_cands[m]) for m in range(lookahead)
+                )
+                conflict_penalty += best_j_conflict
 
-    # pairwise conflict surcharge:
-    # if label i picks candidate k and label j's best candidate conflicts with
-    # that choice, add a penalty to matrix[i, i*top_k+k] so the solver steers
-    # label i to a position that doesn't block label j.
-    #
-    # We approximate: for each (i,j) pair, for each candidate k of label i,
-    # compute the conflict cost against the *best available* candidate of j.
-    # This is O(n² × top_k) — fine for n ≤ 200.
-    for i in range(n):
-        for j in range(n):
-            if i == j:
-                continue
-            j_cands = cand_by_idx[j]
-            if not j_cands:
-                continue
-            j_best = j_cands[0]   # cheapest candidate for label j
-
-            for k, cand_i in enumerate(cand_by_idx[i]):
-                col = i * top_k + k
-                if matrix[i, col] >= W_MISS:
-                    continue
-                conflict = _conflict_cost(cand_i, j_best)
-                if conflict > 0:
-                    matrix[i, col] += conflict
+            matrix[i, i * top_k + k] = base_cost + conflict_penalty
 
     return matrix
-
 
 def _solve_assignment(
     label_ids: List[int],
@@ -331,54 +340,32 @@ def _conflict_cost(cand_a: dict, cand_b: dict) -> float:
 
 def _repair_overlaps(label_ids, candidates, assignment, max_passes=3):
     for _ in range(max_passes):
-        conflicts = [
-            (lid_a, lid_b)
-            for i, lid_a in enumerate(label_ids)
-            for lid_b in label_ids[i + 1:]
-            if assignment.get(lid_a) and assignment.get(lid_b)
-            and _conflict_cost(assignment[lid_a], assignment[lid_b]) > 0.0
-        ]
-        if not conflicts:
-            break
-
         made_progress = False
-        for lid_a, lid_b in conflicts:
-            ca, cb = assignment[lid_a], assignment[lid_b]
-            if _conflict_cost(ca, cb) == 0.0:
-                continue  # already resolved by a prior swap this pass
+        for i, lid_a in enumerate(label_ids):
+            ca = assignment.get(lid_a)
+            if not ca: continue
 
-            # tight bbox overlap surviving to repair = no clean solution exists
-            if ca['bbox'].intersects(cb['bbox']):
-                print(f"Warning: unresolvable tight bbox overlap between "
-                    f"labels {lid_a} and {lid_b} — increase OUTER_CANDIDATE_POOL "
-                    f"or OUTER_MAX_STEPS")
+            # Find who lid_a is currently hitting
+            for lid_b in label_ids:
+                if lid_a == lid_b or not assignment.get(lid_b): continue
+                cb = assignment[lid_b]
+                
+                if _conflict_cost(ca, cb) > 0:
+                    # Try to find a replacement for lid_a that is better
+                    best_alt = ca
+                    min_conflict = sum(_conflict_cost(ca, assignment[o]) for o in label_ids if o != lid_a and assignment.get(o))
 
-            resolved = False
-            for lid_fix, lid_keep in [(lid_a, lid_b), (lid_b, lid_a)]:
-                c_keep = assignment[lid_keep]
-                for alt in candidates.get(lid_fix, []):
-                    if alt is assignment[lid_fix]:
-                        continue
-                    # must resolve this conflict
-                    if _conflict_cost(alt, c_keep) > 0.0:
-                        continue
-                    # must not introduce new conflicts
-                    if any(
-                        _conflict_cost(alt, assignment[o]) > 0.0
-                        for o in label_ids
-                        if o != lid_fix and assignment.get(o) is not None
-                    ):
-                        continue
-                    assignment[lid_fix] = alt
-                    made_progress = True
-                    resolved = True
-                    break
-                if resolved:
-                    break
-
-        if not made_progress:
-            break  # no swap helped — accept remaining conflicts
-
+                    for alt in candidates.get(lid_a, []):
+                        new_conflict = sum(_conflict_cost(alt, assignment[o]) for o in label_ids if o != lid_a and assignment.get(o))
+                        
+                        # Fix: Accept if total conflict decreases, even if not zero
+                        if new_conflict < min_conflict:
+                            min_conflict = new_conflict
+                            best_alt = alt
+                            made_progress = True
+                    
+                    assignment[lid_a] = best_alt
+        if not made_progress: break
     return assignment
 
 # ── public entry point ────────────────────────────────────────────────────────
@@ -439,6 +426,7 @@ def outer_overflow_labels(
     # ── Phase 1: generate candidates per gap ─────────────────────────────────
     all_candidates: Dict[int, List[dict]] = {}
 
+    tasks: list[dict] = []
     for gap in gaps:
         if not gap["assigned"]:
             continue
@@ -448,19 +436,25 @@ def outer_overflow_labels(
         for node_id in assigned:
             ol = overflow_candidates[node_id]
             node_pos = G.nodes[ol.node_id]["pos"]
-            cands = _generate_candidates(
-                centroid            = centroid,
-                outer_polygon       = outer_polygon,
-                placed_union        = placed_union,
-                label               = ol,
-                node_pos            = node_pos,
-                own_node_id         = ol.node_id,
-                own_label_id        = node_id,
-                G                   = G,
-                overflow_candidates = overflow_candidates,
-                label_candidates    = label_candidates,
-                top_k               = OUTER_CANDIDATE_POOL,
-            )
+            tasks.append({
+                "node_id":            node_id,
+                "centroid":           centroid,
+                "outer_polygon":      outer_polygon,
+                "placed_union":       placed_union,
+                "label":              ol,
+                "node_pos":           node_pos,
+                "own_node_id":        ol.node_id,
+                "own_label_id":       node_id,
+                "G":                  G,
+                "overflow_candidates": overflow_candidates,
+                "label_candidates":   label_candidates,
+                "top_k":              OUTER_CANDIDATE_POOL,
+            })
+    
+    with ThreadPoolExecutor() as pool:
+        futures = {pool.submit(_generate_candidates_task, t): t["node_id"] for t in tasks}
+        for fut in as_completed(futures):
+            node_id, cands = fut.result()
             all_candidates[node_id] = cands
             if not cands:
                 print(f"Warning: no candidates generated for label {node_id}")
