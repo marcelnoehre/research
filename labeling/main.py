@@ -15,7 +15,7 @@ from post_processing import *
 ################################################################################ 
 # Data
 ################################################################################
-FILE = 'convex-ordinal'
+FILE = 'car'
 parser = Parser()
 cxt = parser.decode_cxt(f'../data/{FILE}.cxt')
 print(cxt.print_data())
@@ -296,7 +296,22 @@ unbounded_overflow_labels = [
     for ol in overflow_candidates.values()
     if ol.anchor == 'overflow'
 ]
-overflow_candidates = outer_overflow_labels(G, label_candidates, overflow_candidates, outer_nodes)
+all_overflow_candidates, overflow_candidates = outer_overflow_labels(G, label_candidates, overflow_candidates, outer_nodes)
+
+# plot_lattice(
+#     G, cxt, lattice.nodes, coords,
+#     output_path="figs/all_outer_overflow_candidates.pdf",
+#     intersections=intersection_points,
+#     cycles=bounded_faces,
+#     areas=areas,
+#     centers=centers,
+#     label_candidates=label_candidates,
+#     label_texts=label_texts,
+#     show_label_candidates=True,
+#     colored_label_candidates=True,
+#     overflow_labels=all_overflow_candidates,
+#     show_overflow_labels=True
+# )
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,

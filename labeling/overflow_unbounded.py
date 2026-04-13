@@ -16,6 +16,7 @@ global optimiser:
 Falls back to greedy best-first if scipy is absent or the problem is very large.
 """
 
+import copy
 import math
 import numpy as np
 import networkx as nx
@@ -50,7 +51,6 @@ W_MISS    = 1e6    # sentinel cost for "no valid candidate"
 W_TIGHT_OVERLAP = 500.0
 W_PADDING = 25.0
 W_BINDER_CROSS = 100.0  # add to module-level tunables
-W_DENSITY_WEIGHT = 50.0
 
 def _generate_candidates_task(args: dict) -> tuple[int, list[dict]]:
     node_id = args["node_id"]
@@ -199,14 +199,13 @@ def _generate_candidates(
                 c_binder = line.length * W_BINDER
                 c_align = (1.0 - align) * W_ALIGN
                 c_binder_cross = 0.0 if binder_cost else W_BINDER_CROSS
-                c_density = nodes_in_sector * W_DENSITY_WEIGHT
 
-                cost = c_angle + c_binder + c_align + c_binder_cross + c_density
+                cost = c_angle + c_binder + c_align + c_binder_cross
 
                 print(f"  label={own_label_id} dist={dist:.1f} "
                     f"| c_angle={c_angle:.1f} "
                     f"c_binder={c_binder:.1f} c_align={c_align:.1f} "
-                    f"| c_binder_cross={c_binder_cross:.1f} c_density={c_density:.1f} "
+                    f"| c_binder_cross={c_binder_cross:.1f}"
                     f"| total={cost:.1f}")
 
                 scored.append((cost, {
@@ -472,6 +471,20 @@ def outer_overflow_labels(
 
     # ── Apply results ─────────────────────────────────────────────────────────
     result_map = dict(overflow_candidates)
+    all_results = {}
+
+    for node_id, candidates in all_candidates.items():
+        for i, cand in enumerate(candidates):
+            cand_ol = copy.deepcopy(overflow_candidates[node_id])
+            
+            update_overflow_label_position(
+                cand_ol, 
+                cand['cx'], 
+                cand['cy'], 
+                cand.get('anchor_name', 'center')
+            )
+            
+            all_results[f"{node_id}_cand_{i}"] = cand_ol
 
     for node_id, chosen in assignment.items():
         ol = overflow_candidates[node_id]
@@ -484,4 +497,4 @@ def outer_overflow_labels(
         update_overflow_label_position(ol, chosen['cx'], chosen['cy'], chosen['anchor_name'])
         result_map[node_id] = ol
 
-    return result_map
+    return all_results, result_map
