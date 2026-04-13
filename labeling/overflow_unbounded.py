@@ -40,17 +40,21 @@ from overflow_bounded import (
 OUTER_STEP          = 0.5
 OUTER_MAX_STEPS     = 500
 WEDGE_RADIUS        = 1e4
-OUTER_CANDIDATE_POOL = 500   # top-K candidates kept per label after phase 1
+OUTER_CANDIDATE_POOL = 200   # top-K candidates kept per label after phase 1
 
 # cost weights
-W_ALIGN = 2.0
-W_ANGLE  = 1.0
-W_BINDER = 1.5    # increase slightly since it's now the primary distance signal
-W_OVERLAP = 200.0   # pairwise overlap penalty (per overlapping pair)
-W_MISS    = 1e6    # sentinel cost for "no valid candidate"
-W_TIGHT_OVERLAP = 500.0
-W_PADDING = 25.0
-W_BINDER_CROSS = 100.0  # add to module-level tunables
+W_ALIGN         = 1.0   # reduced — alignment is a tiebreaker, not a driver
+W_ANGLE         = 0.5   # reduced — natural angle already baked into candidate generation
+W_BOUNDARY      = 5.0   # raised — primary signal: hug the polygon
+W_BINDER        = 0.5   # reduced — secondary, and correlated with boundary anyway
+W_BINDER_CROSS  = 8.0   # 
+W_TIGHT_OVERLAP = 50.0  # 
+W_OVERLAP       = 20.0  # 
+W_PADDING       = 5.0   # 
+W_MISS          = 1e6   # 
+
+ITERATIVE_HUNGARIAN_MAX_ITERS = 20
+ITER_PENALTY_MULTIPLIER       = 2.0
 
 def _generate_candidates_task(args: dict) -> tuple[int, list[dict]]:
     node_id = args["node_id"]
@@ -194,19 +198,20 @@ def _generate_candidates(
                 angle_offset = abs((off + math.pi) % (2 * math.pi) - math.pi)
                 nodes_in_sector = sum(1 for nid, data in G.nodes(data=True) 
                      if abs(_angle_from_centroid(centroid, data['pos']) - angle) < 0.2)
+                
+                anchor_pt_shapely = Point(pt)
+                dist_to_boundary = outer_polygon.exterior.distance(anchor_pt_shapely)
 
                 c_angle = angle_offset * W_ANGLE
                 c_binder = line.length * W_BINDER
                 c_align = (1.0 - align) * W_ALIGN
-                c_binder_cross = 0.0 if binder_cost else W_BINDER_CROSS
-
-                cost = c_angle + c_binder + c_align + c_binder_cross
+                c_boundary = dist_to_boundary * W_BOUNDARY
+                cost = c_angle + c_binder + c_align + c_boundary
 
                 print(f"  label={own_label_id} dist={dist:.1f} "
                     f"| c_angle={c_angle:.1f} "
                     f"c_binder={c_binder:.1f} c_align={c_align:.1f} "
-                    f"| c_binder_cross={c_binder_cross:.1f}"
-                    f"| total={cost:.1f}")
+                    f"c_boundary={c_boundary:.1f} | total={cost:.1f}")
 
                 scored.append((cost, {
                     'cost':        cost,
@@ -228,32 +233,44 @@ def _generate_candidates(
     return [c for _, c in scored[:top_k]]
 
 # ── Phase 2: global assignment ────────────────────────────────────────────────
-def _build_cost_matrix(label_ids, candidates, top_k):
-    n = len(label_ids)
-    ncols = n * top_k
-    matrix = np.full((n, ncols), W_MISS)
-    cand_by_idx = [candidates.get(lid, []) for lid in label_ids]
+def _find_conflicting_pairs(
+    label_ids: List[int],
+    assignment: Dict[int, Optional[dict]],
+) -> List[Tuple[int, int]]:
+    """
+    Return every (lid_a, lid_b) pair where the assigned candidates overlap.
+    Each pair is reported once (lid_a < lid_b).
+    """
+    conflicts = []
+    ids_with_cand = [lid for lid in label_ids if assignment.get(lid) is not None]
+    for idx_a in range(len(ids_with_cand)):
+        for idx_b in range(idx_a + 1, len(ids_with_cand)):
+            lid_a = ids_with_cand[idx_a]
+            lid_b = ids_with_cand[idx_b]
+            if _conflict_cost(assignment[lid_a], assignment[lid_b]) > 0.0:
+                conflicts.append((lid_a, lid_b))
+    return conflicts
 
-    for i, lid in enumerate(label_ids):
+def _build_cost_matrix_with_penalties(
+    label_ids: List[int],
+    cand_by_idx: List[List[dict]],
+    top_k: int,
+    penalty_table: Dict[Tuple[int, int], float],
+) -> np.ndarray:
+    """
+    Same structure as the old _build_cost_matrix, but:
+      - drops the lookahead heuristic (no longer needed — real conflicts are
+        captured iteratively instead)
+      - adds per-cell penalty from the penalty_table built up across rounds
+    """
+    n = len(label_ids)
+    matrix = np.full((n, n * top_k), W_MISS)
+
+    for i in range(n):
         for k, cand_i in enumerate(cand_by_idx[i]):
             base_cost = cand_i['cost']
-            conflict_penalty = 0.0
-            
-            # Compare against ALL other labels
-            for j in range(n):
-                if i == j: continue
-                j_cands = cand_by_idx[j]
-                if not j_cands: continue
-                
-                # Check conflict against label j's top 3 options, not just index 0
-                # This prevents the "Shadow" effect
-                lookahead = min(3, len(j_cands))
-                best_j_conflict = min(
-                    _conflict_cost(cand_i, j_cands[m]) for m in range(lookahead)
-                )
-                conflict_penalty += best_j_conflict
-
-            matrix[i, i * top_k + k] = base_cost + conflict_penalty
+            injected  = penalty_table.get((i, k), 0.0)
+            matrix[i, i * top_k + k] = base_cost + injected
 
     return matrix
 
@@ -262,57 +279,86 @@ def _solve_assignment(
     candidates: Dict[int, List[dict]],
     top_k: int,
 ) -> Dict[int, Optional[dict]]:
-    """
-    Solve the assignment problem globally.
-
-    Strategy:
-      1. Hungarian algorithm (scipy) — exact, O(n³)
-      2. Greedy best-first — fallback when scipy absent or n > 200
-
-    After an initial assignment, runs one round of pairwise-overlap repair
-    where conflicting pairs swap to lower-cost non-overlapping alternatives.
-    """
     n = len(label_ids)
 
     try:
         if n > 200:
-            raise ImportError("problem too large for Hungarian; use greedy")
+            raise ImportError("too large")
         from scipy.optimize import linear_sum_assignment
 
-        matrix = _build_cost_matrix(label_ids, candidates, top_k)
-        row_ind, col_ind = linear_sum_assignment(matrix)
+        cand_by_idx   = [candidates.get(lid, []) for lid in label_ids]
+        penalty_table: Dict[Tuple[int, int], float] = {}
+        assignment:   Dict[int, Optional[dict]]     = {}
 
-        assignment: Dict[int, Optional[dict]] = {}
-        for i, col in zip(row_ind, col_ind):
-            lid = label_ids[i]
-            k = col - i * top_k   # which candidate within this label's block
-            cands = candidates.get(lid, [])
-            if 0 <= k < len(cands) and matrix[i, col] < W_MISS:
-                assignment[lid] = cands[k]
-            else:
-                assignment[lid] = None
+        for iteration in range(ITERATIVE_HUNGARIAN_MAX_ITERS):
+            matrix = _build_cost_matrix_with_penalties(
+                label_ids, cand_by_idx, top_k, penalty_table
+            )
+            row_ind, col_ind = linear_sum_assignment(matrix)
+
+            chosen_idx:     Dict[int, int]          = {}
+            new_assignment: Dict[int, Optional[dict]] = {}
+            for i, col in zip(row_ind, col_ind):
+                lid   = label_ids[i]
+                k     = col - i * top_k
+                cands = cand_by_idx[i]
+                if 0 <= k < len(cands) and matrix[i, col] < W_MISS:
+                    new_assignment[lid] = cands[k]
+                    chosen_idx[lid]     = k
+                else:
+                    new_assignment[lid] = None
+                    chosen_idx[lid]     = -1
+
+            assignment     = new_assignment
+            conflict_pairs = _find_conflicting_pairs(label_ids, assignment)
+
+            print(f"[Hungarian] iteration {iteration+1}: {len(conflict_pairs)} conflict(s)")
+            if not conflict_pairs:
+                break
+
+            for lid_a, lid_b in conflict_pairs:
+                i  = label_ids.index(lid_a)
+                j  = label_ids.index(lid_b)
+                ka = chosen_idx.get(lid_a, -1)
+                kb = chosen_idx.get(lid_b, -1)
+                ca = assignment.get(lid_a)
+                cb = assignment.get(lid_b)
+                pair_cost = _conflict_cost(ca, cb) if ca and cb else W_OVERLAP
+                scale = ITER_PENALTY_MULTIPLIER ** iteration
+                if ka >= 0:
+                    penalty_table[(i, ka)] = (
+                        penalty_table.get((i, ka), 0.0) + pair_cost * scale
+                    )
+                if kb >= 0:
+                    penalty_table[(j, kb)] = (
+                        penalty_table.get((j, kb), 0.0) + pair_cost * scale
+                    )
 
     except ImportError:
-        # greedy best-first fallback
-        assignment = {}
-        placed_bboxes: List = []
-        # sort labels by number of candidates ascending (most constrained first)
-        order = sorted(label_ids, key=lambda lid: len(candidates.get(lid, [])))
-        for lid in order:
-            cands = candidates.get(lid, [])
-            chosen = None
-            for cand in cands:
-                if not any(cand['bbox'].intersects(pb) for pb in placed_bboxes):
-                    chosen = cand
-                    break
-            if chosen is None and cands:
-                chosen = cands[0]   # accept overlap rather than skip
-            if chosen:
-                placed_bboxes.append(chosen['bbox'])
-            assignment[lid] = chosen
+        assignment = _greedy_assignment(label_ids, candidates)
 
-    # one round of overlap repair (works for both solvers)
+    # safe post-pass: only swaps that strictly reduce conflict
     assignment = _repair_overlaps(label_ids, candidates, assignment)
+    return assignment
+
+def _greedy_assignment(
+    label_ids: List[int],
+    candidates: Dict[int, List[dict]],
+) -> Dict[int, Optional[dict]]:
+    assignment: Dict[int, Optional[dict]] = {}
+    placed_bboxes: List = []
+    order = sorted(label_ids, key=lambda lid: len(candidates.get(lid, [])))
+    for lid in order:
+        chosen = None
+        for cand in candidates.get(lid, []):
+            if not any(cand['bbox'].intersects(pb) for pb in placed_bboxes):
+                chosen = cand
+                break
+        if chosen is None and candidates.get(lid):
+            chosen = candidates[lid][0]
+        if chosen:
+            placed_bboxes.append(chosen['bbox'])
+        assignment[lid] = chosen
     return assignment
 
 
