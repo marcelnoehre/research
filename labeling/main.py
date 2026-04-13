@@ -250,6 +250,8 @@ if label_config['general']:
         if not label_candidates[node_id]:
             overflow_candidates[node_id] = compute_overflow_label(G, node_id, label_texts.get((node_id, 'general'), ''), label_type='general')
 
+skipping_inner = len(overflow_candidates) >= len(outer_nodes)
+
 plot_lattice(
     G, cxt, lattice.nodes, coords,
     output_path="figs/overflow_candidates.pdf",
@@ -268,22 +270,23 @@ plot_lattice(
 ################################################################################
 # Inner Overflow Labels
 ################################################################################
-overflow_candidates = inner_overflow_labels(G, label_candidates, overflow_candidates, bounded_faces, centers)
+if not skipping_inner:
+    overflow_candidates = inner_overflow_labels(G, label_candidates, overflow_candidates, bounded_faces, centers)
 
-plot_lattice(
-    G, cxt, lattice.nodes, coords,
-    output_path="figs/inner_overflow_candidates.pdf",
-    intersections=intersection_points,
-    cycles=bounded_faces,
-    areas=areas,
-    centers=centers,
-    label_candidates=label_candidates,
-    label_texts=label_texts,
-    show_label_candidates=True,
-    colored_label_candidates=True,
-    overflow_labels=overflow_candidates,
-    show_overflow_labels=True
-)
+    plot_lattice(
+        G, cxt, lattice.nodes, coords,
+        output_path="figs/inner_overflow_candidates.pdf",
+        intersections=intersection_points,
+        cycles=bounded_faces,
+        areas=areas,
+        centers=centers,
+        label_candidates=label_candidates,
+        label_texts=label_texts,
+        show_label_candidates=True,
+        colored_label_candidates=True,
+        overflow_labels=overflow_candidates,
+        show_overflow_labels=True
+    )
 
 ################################################################################
 # Outer Overflow Labels

@@ -1,4 +1,5 @@
 import matplotlib
+matplotlib.use('Agg')
 import matplotlib.cm as cm
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
@@ -284,4 +285,5 @@ def plot_lattice(
     ax.set_aspect('equal', adjustable='datalim')
     ax.axis('off')
     plt.savefig(output_path, format="pdf")
+    plt.close('all')
     plt.close(fig)
