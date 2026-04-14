@@ -45,15 +45,16 @@ CANDIDATES_PER_RAY = 2
 RAYS = 180
 
 # cost weights
-W_ALIGN         = 1.0   # reduced — alignment is a tiebreaker, not a driver
-W_ANGLE         = 0.5   # reduced — natural angle already baked into candidate generation
-W_BOUNDARY      = 5.0   # raised — primary signal: hug the polygon
-W_BINDER        = 0.5   # reduced — secondary, and correlated with boundary anyway
-W_BINDER_CROSS  = 8.0   # 
-W_TIGHT_OVERLAP = 50.0  # 
-W_OVERLAP       = 20.0  # 
-W_PADDING       = 5.0   # 
-W_MISS          = 1e6   # 
+W_ALIGN         = 1.0   # anchor alignment
+W_ANGLE         = 0.5   # natural angle
+W_BOUNDARY      = 3.0   # close to polygon boundary
+W_BINDER        = 5.0   # length of binding line
+W_BINDER_INTERSECT = 50.0 # penalty for binder intersecting another label
+W_BINDER_CROSS  = 8.0   # penalty for crossing binding lines
+W_TIGHT_OVERLAP = 80.0  # penalty for ink overlaps 
+W_OVERLAP       = 10.0  # penalty for padding overlaps
+W_PADDING       = 5.0   # penalty for padding
+W_MISS          = 1e6   # penalty for unplaced label
 
 ITERATIVE_HUNGARIAN_MAX_ITERS = 20
 ITER_PENALTY_MULTIPLIER       = 2.0
@@ -98,6 +99,8 @@ def _sort_by_node_angle(assigned, gap, centroid, G, overflow_candidates):
     return sorted(assigned, key=key)
 
 # ── Phase 1: per-label candidate generation ──────────────────────────────────
+OUTER_MARGIN = 0.1
+GRID_STEP = 0.5
 
 def _generate_candidates(
     centroid, outer_polygon, placed_union,
@@ -106,130 +109,165 @@ def _generate_candidates(
     top_k=OUTER_CANDIDATE_POOL,
 ) -> List[dict]:
     """
-    Local Orthogonal Candidate Generation.
-    Finds the nearest boundary edge for the node and searches for placements
-    normal to that edge, drifting only to avoid collisions.
-    """
-    node_pt_shapely = Point(node_pos)
-    node_pt = np.array(node_pos)
-    
-    # 1. LOCAL GEOMETRY: Find the natural exit point on the boundary
-    # We use the exterior linear ring for the projection
-    boundary = outer_polygon.exterior
-    proj_dist = boundary.project(node_pt_shapely)
-    closest_pt_on_boundary = boundary.interpolate(proj_dist)
-    
-    # Origin of search rays is the boundary exit point
-    rx, ry = closest_pt_on_boundary.x, closest_pt_on_boundary.y
-    
-    # 2. NATURAL ANGLE: The vector from the node through its closest exit point
-    # This ensures the label 'pops out' perpendicularly to the local edge.
-    natural_angle = math.atan2(ry - node_pos[1], rx - node_pos[0])
+    Grid-based candidate generation.
 
+    1. Build a regular grid that tiles the bounding box of outer_polygon
+       expanded by one label-width on every side.
+    2. For each cell center, AABB-reject anything that overlaps the polygon,
+       placed labels, or another node.  Only surviving cells get Shapely work.
+    3. For each surviving cell pick the best anchor (vectorised dot-product),
+       validate the binder once, score, keep.
+    4. Sort by cost, return top-K.
+    """
+
+    # ── pre-compute once ─────────────────────────────────────────────────────
     ew, eh = _label_wh_expanded(label)
     tw, th = _label_wh(label)
     iw, ih = _ink_wh(label)
+    hw, hh = ew / 2, eh / 2
 
-    all_offsets = np.linspace(0, 2 * math.pi, RAYS, endpoint=False)
+    node_pt = np.array(node_pos, dtype=float)
 
+    other_node_pos = np.array(
+        [data['pos'] for nid, data in G.nodes(data=True)
+         if isinstance(nid, int) and nid != own_node_id],
+        dtype=float
+    )
+    anchor_names = [
+        'top_left','top_right','bottom_left','bottom_right',
+        'top','bottom','left','right',
+    ]
+    anchor_offsets = np.array([
+        [-tw/2,  th/2], [ tw/2,  th/2],
+        [-tw/2, -th/2], [ tw/2, -th/2],
+        [  0.0,  th/2], [  0.0, -th/2],
+        [-tw/2,   0.0], [ tw/2,   0.0],
+    ], dtype=float) 
+
+    poly_bounds = outer_polygon.bounds
+    poly_ext    = outer_polygon.exterior
+
+    # ── build grid ───────────────────────────────────────────────────────────
+    margin = max(ew, eh) + OUTER_MARGIN
+    gx0 = poly_bounds[0] - margin
+    gy0 = poly_bounds[1] - margin
+    gx1 = poly_bounds[2] + margin
+    gy1 = poly_bounds[3] + margin
+
+    xs = np.arange(gx0 + hw, gx1, GRID_STEP)
+    ys = np.arange(gy0 + hh, gy1, GRID_STEP)
+    gx, gy = np.meshgrid(xs, ys)
+    cx_all = gx.ravel()
+    cy_all = gy.ravel()
+
+    # ── pass 1: bulk AABB filter (pure numpy, no Shapely) ────────────────────
+    # Expanded bbox corners for every cell.
+    ex0 = cx_all - hw;  ey0 = cy_all - hh
+    ex1 = cx_all + hw;  ey1 = cy_all + hh
+
+    # Keep cells whose AABB does NOT overlap the polygon bounding box
+    overlaps_poly_aabb = ~(
+        (ex1 < poly_bounds[0]) | (ex0 > poly_bounds[2]) |
+        (ey1 < poly_bounds[1]) | (ey0 > poly_bounds[3])
+    )
+    keep = np.ones(len(cx_all), dtype=bool)
+
+    # Node containment: reject cells whose expanded bbox contains another node
+    if len(other_node_pos):
+        ox = other_node_pos[:, 0]
+        oy = other_node_pos[:, 1]
+        node_inside = (
+            (ox[None, :] >= ex0[:, None]) & (ox[None, :] <= ex1[:, None]) &
+            (oy[None, :] >= ey0[:, None]) & (oy[None, :] <= ey1[:, None])
+        ).any(axis=1)
+        keep &= ~node_inside
+
+    candidate_indices = np.where(keep)[0]
+
+    # ── pass 2: Shapely intersection tests on surviving candidates ────────────
     scored: List[Tuple[float, dict]] = []
 
-    for off in all_offsets:
-        angle = natural_angle + off
-        dx, dy = math.cos(angle), math.sin(angle)
+    for i in candidate_indices:
+        ox_i, oy_i = float(cx_all[i]), float(cy_all[i])
 
-        found_for_this_ray = 0
-        blocked_anchors = set()
-        
-        # We step outward starting from the boundary point
-        for step in range(OUTER_MAX_STEPS):
-            dist = step * OUTER_STEP
+        # Shapely polygon checks — only for cells that survived AABB.
+        exp_bbox = _label_bbox_polygon(ox_i, oy_i, ew, eh)
 
-            ox, oy = rx + dx * dist, ry + dy * dist
-            exp_bbox = _label_bbox_polygon(ox, oy, ew, eh)
-            tight_bbox = _label_bbox_polygon(ox, oy, tw, th)
+        # Must be outside the drawing polygon.
+        if overlaps_poly_aabb[i] and outer_polygon.intersects(exp_bbox):
+            continue
 
-            if outer_polygon.intersects(exp_bbox):
+        # Must not overlap already-placed labels.
+        if placed_union.intersects(exp_bbox):
+            continue
+
+        tight_bbox  = _label_bbox_polygon(ox_i, oy_i, tw, th)
+        own_ink     = _label_bbox_polygon(ox_i, oy_i, iw, ih)
+        label_center = np.array([ox_i, oy_i])
+
+        # ── anchor selection (vectorised) ────────────────────────────────────
+        vec  = node_pt - label_center
+        dist = float(np.linalg.norm(vec))
+        unit = vec / dist if dist > 0 else vec
+
+        pts    = label_center + anchor_offsets
+        va     = pts - label_center
+        na     = np.linalg.norm(va, axis=1)
+        safe   = na > 0
+        aligns = np.where(safe, (va / np.where(safe[:,None], na[:,None], 1.0)) @ unit, -1.0)
+
+        # Try anchors best-first; stop at first valid binder.
+        chosen_name = chosen_align = anchor_binder = anchor_shapely_pt = None
+        for idx in np.argsort(-aligns):
+            pt  = pts[idx]
+            pt_shapely = Point(float(pt[0]), float(pt[1]))
+            line = LineString([pt.tolist(), node_pos])
+
+            if own_ink.intersects(line):
                 continue
-            if placed_union.intersects(exp_bbox):
-                continue
-            if any(
-                exp_bbox.contains(Point(data['pos']))
-                for nid, data in G.nodes(data=True)
-                if isinstance(nid, int) and nid != own_node_id
+            if not binding_line_valid(
+                line, own_node_id, own_label_id,
+                G, [], overflow_candidates, label_candidates, soft=True
             ):
                 continue
 
-            label_center = np.array([ox, oy])
-            vec = node_pt - label_center
-            dist_to_node = np.linalg.norm(vec)
-            unit = vec / dist_to_node if dist_to_node > 0 else vec
-            own_ink = _label_bbox_polygon(ox, oy, iw, ih)
-            anchors = _anchor_points(ox, oy, tw, th)
+            chosen_name       = anchor_names[idx]
+            chosen_align      = float(aligns[idx])
+            anchor_binder     = line
+            anchor_shapely_pt = pt_shapely
+            break
 
-            scored_anchors = []
-            for name, pt in anchors.items():
-                if name in blocked_anchors:
-                    continue
-                va = np.array(pt) - label_center
-                na = np.linalg.norm(va)
-                align = float(np.dot(unit, va / na)) if na > 0 else -1.0
-                scored_anchors.append((align, name, pt))
-            scored_anchors.sort(reverse=True)
+        if chosen_name is None:
+            continue
 
-            for align, name, pt in scored_anchors:
-                line = LineString([pt, node_pos])
-                if own_ink.intersects(line):
-                    blocked_anchors.add(name)
-                    continue
+        angle_to_cell = math.atan2(oy_i - centroid[1], ox_i - centroid[0])
+        node_angle    = math.atan2(node_pos[1] - centroid[1], node_pos[0] - centroid[0])
+        angle_offset  = abs((angle_to_cell - node_angle + math.pi) % (2 * math.pi) - math.pi)
 
-                if not binding_line_valid(
-                    line, own_node_id, own_label_id,
-                    G, [], overflow_candidates, label_candidates, soft=True
-                ):
-                    blocked_anchors.add(name)
-                    continue
+        dist_to_boundary = poly_ext.distance(anchor_shapely_pt)
 
-                # binder_cost = binding_line_valid(
-                #     line, own_node_id, own_label_id,
-                #     G, [], overflow_candidates, label_candidates
-                # )
+        c_angle    = angle_offset           * W_ANGLE
+        c_binder   = anchor_binder.length   * W_BINDER
+        c_align    = (1.0 - chosen_align)   * W_ALIGN
+        c_boundary = dist_to_boundary       * W_BOUNDARY
+        cost       = c_angle + c_binder + c_align + c_boundary
 
-                # Normalized angle offset (-pi to pi)
-                angle_offset = abs((off + math.pi) % (2 * math.pi) - math.pi)
-                # nodes_in_sector = sum(1 for nid, data in G.nodes(data=True) 
-                #      if abs(_angle_from_centroid(centroid, data['pos']) - angle) < 0.2)
-                
-                anchor_pt_shapely = Point(pt)
-                dist_to_boundary = outer_polygon.exterior.distance(anchor_pt_shapely)
-
-                c_angle = angle_offset * W_ANGLE
-                c_binder = line.length * W_BINDER
-                c_align = (1.0 - align) * W_ALIGN
-                c_boundary = dist_to_boundary * W_BOUNDARY
-                cost = c_angle + c_binder + c_align + c_boundary
-
-                print(f"  label={own_label_id} dist={dist:.1f} "
+        print(f"  label={own_label_id} dist={dist:.1f} "
                     f"| c_angle={c_angle:.1f} "
                     f"c_binder={c_binder:.1f} c_align={c_align:.1f} "
                     f"c_boundary={c_boundary:.1f} | total={cost:.1f}")
 
-                scored.append((cost, {
-                    'cost':        cost,
-                    'cx':          ox,
-                    'cy':          oy,
-                    'anchor_name': name,
-                    'anchor_pt':   pt,
-                    'bbox':        tight_bbox,
-                    'exp_bbox':    exp_bbox,
-                    'binder':      line,
-                }))
+        scored.append((cost, {
+            'cost':        cost,
+            'cx':          ox_i,
+            'cy':          oy_i,
+            'anchor_name': chosen_name,
+            'anchor_pt':   (anchor_shapely_pt.x, anchor_shapely_pt.y),
+            'bbox':        tight_bbox,
+            'exp_bbox':    exp_bbox,
+            'binder':      anchor_binder,
+        }))
 
-                found_for_this_ray += 1
-                break 
-
-            if found_for_this_ray >= CANDIDATES_PER_RAY or len(scored_anchors) <= len(blocked_anchors):
-                break
     scored.sort(key=lambda x: x[0])
     return [c for _, c in scored[:top_k]]
 
@@ -396,12 +434,12 @@ def _conflict_cost(cand_a: dict, cand_b: dict) -> float:
         cost += W_PADDING * (enc_area / 400.0)
 
     if cand_a['binder'].intersects(cand_b['bbox']):
-        cost += W_BINDER_CROSS
+        cost += W_BINDER_INTERSECT
     if cand_b['binder'].intersects(cand_a['bbox']):
-        cost += W_BINDER_CROSS
+        cost += W_BINDER_INTERSECT
 
     if cand_a['binder'].crosses(cand_b['binder']):
-        cost += W_BINDER_CROSS * 0.5
+        cost += W_BINDER_CROSS
 
     return cost
 
