@@ -196,7 +196,7 @@ def plot_lattice(
     for concept in concepts:
         x, y = _pos(concept)
         ax.scatter(x, y, facecolor='white', edgecolor='black',
-                   linewidth=LINE_WIDTH, s=NODE_SIZE, zorder=8)
+                   linewidth=LINE_WIDTH, s=NODE_SIZE, zorder=100)
         if show_vertex_ids:
             ax.annotate(
                 concept,
