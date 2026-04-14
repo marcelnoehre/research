@@ -38,9 +38,11 @@ from overflow_bounded import (
 
 # ── tunables ────────────────────────────────────────────────────────────────
 OUTER_STEP          = 0.5
-OUTER_MAX_STEPS     = 500
+OUTER_MAX_STEPS     = 50
 WEDGE_RADIUS        = 1e4
-OUTER_CANDIDATE_POOL = 200   # top-K candidates kept per label after phase 1
+OUTER_CANDIDATE_POOL = 100   # top-K candidates kept per label after phase 1
+CANDIDATES_PER_RAY = 2
+RAYS = 180
 
 # cost weights
 W_ALIGN         = 1.0   # reduced — alignment is a tiebreaker, not a driver
@@ -128,8 +130,7 @@ def _generate_candidates(
     tw, th = _label_wh(label)
     iw, ih = _ink_wh(label)
 
-    n_rays = 180
-    all_offsets = np.linspace(0, 2 * math.pi, n_rays, endpoint=False)
+    all_offsets = np.linspace(0, 2 * math.pi, RAYS, endpoint=False)
 
     scored: List[Tuple[float, dict]] = []
 
@@ -189,15 +190,15 @@ def _generate_candidates(
                     blocked_anchors.add(name)
                     continue
 
-                binder_cost = binding_line_valid(
-                    line, own_node_id, own_label_id,
-                    G, [], overflow_candidates, label_candidates
-                )
+                # binder_cost = binding_line_valid(
+                #     line, own_node_id, own_label_id,
+                #     G, [], overflow_candidates, label_candidates
+                # )
 
                 # Normalized angle offset (-pi to pi)
                 angle_offset = abs((off + math.pi) % (2 * math.pi) - math.pi)
-                nodes_in_sector = sum(1 for nid, data in G.nodes(data=True) 
-                     if abs(_angle_from_centroid(centroid, data['pos']) - angle) < 0.2)
+                # nodes_in_sector = sum(1 for nid, data in G.nodes(data=True) 
+                #      if abs(_angle_from_centroid(centroid, data['pos']) - angle) < 0.2)
                 
                 anchor_pt_shapely = Point(pt)
                 dist_to_boundary = outer_polygon.exterior.distance(anchor_pt_shapely)
@@ -227,7 +228,7 @@ def _generate_candidates(
                 found_for_this_ray += 1
                 break 
 
-            if found_for_this_ray >= 5 or len(scored_anchors) <= len(blocked_anchors):
+            if found_for_this_ray >= CANDIDATES_PER_RAY or len(scored_anchors) <= len(blocked_anchors):
                 break
     scored.sort(key=lambda x: x[0])
     return [c for _, c in scored[:top_k]]
@@ -280,66 +281,87 @@ def _solve_assignment(
     top_k: int,
 ) -> Dict[int, Optional[dict]]:
     n = len(label_ids)
+    if not label_ids:
+        return {}
 
     try:
         if n > 200:
             raise ImportError("too large")
         from scipy.optimize import linear_sum_assignment
 
-        cand_by_idx   = [candidates.get(lid, []) for lid in label_ids]
+        cand_by_idx = [candidates.get(lid, []) for lid in label_ids]
         penalty_table: Dict[Tuple[int, int], float] = {}
-        assignment:   Dict[int, Optional[dict]]     = {}
+        
+        # Track the globally best state across all iterations
+        best_assignment: Dict[int, Optional[dict]] = {}
+        min_actual_cost = float('inf')
 
         for iteration in range(ITERATIVE_HUNGARIAN_MAX_ITERS):
+            # Build matrix using cumulative penalties
             matrix = _build_cost_matrix_with_penalties(
                 label_ids, cand_by_idx, top_k, penalty_table
             )
             row_ind, col_ind = linear_sum_assignment(matrix)
 
-            chosen_idx:     Dict[int, int]          = {}
-            new_assignment: Dict[int, Optional[dict]] = {}
+            current_assignment: Dict[int, Optional[dict]] = {}
+            current_chosen_idx: Dict[int, int] = {}
+            
+            # 1. Sum up the "Inherent" costs (Phase 1 scores)
+            current_base_sum = 0.0
             for i, col in zip(row_ind, col_ind):
-                lid   = label_ids[i]
-                k     = col - i * top_k
+                lid = label_ids[i]
+                k = col - i * top_k
                 cands = cand_by_idx[i]
                 if 0 <= k < len(cands) and matrix[i, col] < W_MISS:
-                    new_assignment[lid] = cands[k]
-                    chosen_idx[lid]     = k
+                    current_assignment[lid] = cands[k]
+                    current_chosen_idx[lid] = k
+                    current_base_sum += cands[k]['cost']
                 else:
-                    new_assignment[lid] = None
-                    chosen_idx[lid]     = -1
+                    current_assignment[lid] = None
+                    current_chosen_idx[lid] = -1
+                    current_base_sum += W_MISS
 
-            assignment     = new_assignment
-            conflict_pairs = _find_conflicting_pairs(label_ids, assignment)
+            # 2. Calculate the "Real" conflict costs for this specific layout
+            conflict_pairs = _find_conflicting_pairs(label_ids, current_assignment)
+            current_conflict_sum = sum(
+                _conflict_cost(current_assignment[la], current_assignment[lb])
+                for la, lb in conflict_pairs
+            )
 
-            print(f"[Hungarian] iteration {iteration+1}: {len(conflict_pairs)} conflict(s)")
+            total_actual_cost = current_base_sum + current_conflict_sum
+            
+            # 3. Best-in-show tracking
+            if total_actual_cost < min_actual_cost:
+                min_actual_cost = total_actual_cost
+                best_assignment = copy.copy(current_assignment)
+                print(f"[Hungarian] Iter {iteration+1}: New Best Cost! {total_actual_cost:.2f}")
+            else:
+                print(f"[Hungarian] Iter {iteration+1}: Cost {total_actual_cost:.2f} (Best: {min_actual_cost:.2f})")
+
+            # Exit early only if we hit a perfect zero-conflict state
             if not conflict_pairs:
                 break
 
+            # 4. Apply penalties to push the solver away from these specific choices
             for lid_a, lid_b in conflict_pairs:
-                i  = label_ids.index(lid_a)
-                j  = label_ids.index(lid_b)
-                ka = chosen_idx.get(lid_a, -1)
-                kb = chosen_idx.get(lid_b, -1)
-                ca = assignment.get(lid_a)
-                cb = assignment.get(lid_b)
-                pair_cost = _conflict_cost(ca, cb) if ca and cb else W_OVERLAP
+                idx_a, idx_b = label_ids.index(lid_a), label_ids.index(lid_b)
+                ka, kb = current_chosen_idx[lid_a], current_chosen_idx[lid_b]
+                
+                pair_cost = _conflict_cost(current_assignment[lid_a], current_assignment[lid_b])
                 scale = ITER_PENALTY_MULTIPLIER ** iteration
+                
                 if ka >= 0:
-                    penalty_table[(i, ka)] = (
-                        penalty_table.get((i, ka), 0.0) + pair_cost * scale
-                    )
+                    penalty_table[(idx_a, ka)] = penalty_table.get((idx_a, ka), 0.0) + (pair_cost * scale)
                 if kb >= 0:
-                    penalty_table[(j, kb)] = (
-                        penalty_table.get((j, kb), 0.0) + pair_cost * scale
-                    )
+                    penalty_table[(idx_b, kb)] = penalty_table.get((idx_b, kb), 0.0) + (pair_cost * scale)
+
+        assignment = best_assignment
 
     except ImportError:
         assignment = _greedy_assignment(label_ids, candidates)
 
-    # safe post-pass: only swaps that strictly reduce conflict
-    assignment = _repair_overlaps(label_ids, candidates, assignment)
-    return assignment
+    # Final pass to fix any minor local overlaps that don't hurt the global score
+    return _repair_overlaps(label_ids, candidates, assignment)
 
 def _greedy_assignment(
     label_ids: List[int],
