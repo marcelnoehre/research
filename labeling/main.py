@@ -226,7 +226,7 @@ plot_lattice(
 ################################################################################
 # Filter to optimize gaps
 ################################################################################
-label_candidates = filter_optimize_gaps(G, label_candidates, bounded_faces, outer_nodes)
+label_candidates = filter_optimal_space(G, label_candidates, bounded_faces, outer_nodes)
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
