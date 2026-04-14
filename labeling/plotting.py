@@ -5,11 +5,11 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import networkx as nx
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 from fcapy.context import FormalContext
-
 from fca.lattice import Lattice
-from label import DPI, LabelCandidate, OverflowLabel, compute_suggested_font_size
+
+from label import *
 
 _ANCHOR_COLOURS = {
     'top_left':     '#d62728',   # tab:red
@@ -287,3 +287,120 @@ def plot_lattice(
     plt.savefig(output_path, format="pdf")
     plt.close('all')
     plt.close(fig)
+
+
+def _draw_dynamic_candidate(ax, anchor_type, text, pos_coord, fontsize_pt, alpha, renderer=None):
+    is_top    = 'top' in anchor_type
+    is_bottom = 'bottom' in anchor_type
+    is_left   = 'left' in anchor_type
+    is_right  = 'right' in anchor_type
+    is_corner = '_' in anchor_type
+
+    corner_multiplier = 1 / np.sqrt(2)
+    s = corner_multiplier if is_corner else (1.0 / corner_multiplier)
+
+    t = ax.text(
+        pos_coord[0], pos_coord[1], text,
+        ha='center', va='center', fontsize=fontsize_pt,
+        zorder=7, clip_on=False
+    )
+    plt.gcf().canvas.draw()
+
+    if renderer is None:
+        renderer = ax.figure.canvas.get_renderer()
+
+    bbox_pixels = t.get_tightbbox(renderer=renderer)
+    inv = ax.transData.inverted()
+    bbox_data = inv.transform(bbox_pixels)
+    (xmin, ymin), (xmax, ymax) = bbox_data
+    
+    pad = 0.005 * s
+    bl, br, tr, tl = (xmin-pad, ymin-pad), (xmax+pad, ymin-pad), (xmax+pad, ymax+pad), (xmin-pad, ymax+pad)
+
+    anchor_pt_raw = {
+        'top':          ((tl[0] + tr[0]) / 2, tl[1]),
+        'bottom':       ((bl[0] + br[0]) / 2, bl[1]),
+        'left':         (tl[0], (tl[1] + bl[1]) / 2),
+        'right':        (tr[0], (tr[1] + br[1]) / 2),
+        'top_left':     tl,
+        'top_right':    tr,
+        'bottom_left':  bl,
+        'bottom_right': br,
+    }[anchor_type]
+
+    dx = pos_coord[0] - anchor_pt_raw[0]
+    dy = pos_coord[1] - anchor_pt_raw[1]
+
+    t.set_fontsize(font_size + 2.0)
+    t.set_position((pos_coord[0] + dx, pos_coord[1] + dy - 0.0005))
+
+    def shift(pts): return [(p[0] + dx, p[1] + dy) for p in pts]
+
+    ibl, ibr, itr, itl = shift([(xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax)])
+    bl, br, tr, tl = shift([bl, br, tr, tl])
+    
+    # Expanded BBox logic
+    is_top, is_bottom = 'top' in anchor_type, 'bottom' in anchor_type
+    is_left, is_right = 'left' in anchor_type, 'right' in anchor_type
+    exp_l = pad if not is_left else 0
+    exp_r = pad if not is_right else 0
+    exp_t = pad if not is_top else 0
+    exp_b = pad if not is_bottom else 0
+
+    ebl = (bl[0] - exp_l, bl[1] - exp_b)
+    ebr = (br[0] + exp_r, br[1] - exp_b)
+    etr = (tr[0] + exp_r, tr[1] + exp_t)
+    etl = (tl[0] - exp_l, tl[1] + exp_t)
+
+    NODE_SIZE = 50
+    LINE_WIDTH = 1.0
+    ax.add_patch(mpatches.Polygon([ibl, ibr, itr, itl], closed=True, fill=False, edgecolor=_ANCHOR_COLOURS[anchor_type], lw=0.8, alpha=0.9))
+    ax.add_patch(mpatches.Polygon([bl, br, tr, tl], closed=True, color=_ANCHOR_COLOURS[anchor_type], alpha=0.55, lw=1.6))
+    ax.add_patch(mpatches.Polygon([ebl, ebr, etr, etl], closed=True, fill=False, edgecolor=_ANCHOR_COLOURS[anchor_type], ls=':', lw=1.0))
+    ax.scatter(pos_coord[0], pos_coord[1], facecolor='white', edgecolor='black', linewidth=LINE_WIDTH, s=NODE_SIZE, zorder=8)
+
+    return t
+
+if __name__ == "__main__":
+    G = nx.Graph()
+    node_id = 0
+    pos = (0, 0)
+    G.add_node(node_id, pos=pos)
+
+    side_anchors = [('left', 'L'), ('right', 'R'), ('top', 'T'), ('bottom', 'B')]
+    corner_anchors = [('top_left', 'TL'), ('top_right', 'TR'), ('bottom_left', 'BL'), ('bottom_right', 'BR')]
+    font_size = 12.0
+    units_per_mm = 1.0
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.set_xlim(-0.1, 0.1)
+    ax.set_ylim(-0.1, 0.1)
+
+    # Draw the figure once to initialize the renderer
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    
+    for anchor, text in side_anchors:
+        _draw_dynamic_candidate(ax, anchor, text, pos, 12.0, 0.7, renderer=renderer)
+    
+    ax.axis('off')
+
+    plt.tight_layout()
+    plt.savefig('figs/anchors_side.pdf', format="pdf", bbox_inches='tight')
+    plt.close('all')
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.set_xlim(-0.1, 0.1)
+    ax.set_ylim(-0.1, 0.1)
+
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+
+    for anchor, text in corner_anchors:
+        _draw_dynamic_candidate(ax, anchor, text, pos, 12.0, 0.2, renderer=renderer)
+
+    ax.axis('off')
+
+    plt.tight_layout()
+    plt.savefig('figs/anchors_corner.pdf', format="pdf", bbox_inches='tight')
+    plt.close('all')
