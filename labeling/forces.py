@@ -263,7 +263,7 @@ def refine_overflow_forces(
         if lid in overflow_labels
     }
 
-    # Current centre positions
+    # Current centre positions — single source of truth for step-start geometry
     pos: Dict[int, np.ndarray] = {}
     for lid, ol in moveable.items():
         cx, cy = _label_center(ol)
@@ -292,6 +292,13 @@ def refine_overflow_forces(
             all_fixed_centers.append(np.array([cx, cy], dtype=float))
 
     moveable_ids = list(moveable.keys())
+
+    # Pre-compute per-label dimensions once (they don't change between steps).
+    # This ensures Guard 4 and the candidate polygon always use the same,
+    # mutation-independent size, even before the deferred-update fix below.
+    label_wh: Dict[int, Tuple[float, float]] = {
+        lid: _label_wh(ol) for lid, ol in moveable.items()
+    }
 
     # ── simulation loop ───────────────────────────────────────────────────────
     for step in range(steps):
@@ -329,65 +336,108 @@ def refine_overflow_forces(
             )
 
         # 4. Integrate angular velocity → new angle → new Cartesian position
-        reversals = {lid: 0 for lid in moveable_ids}
         max_ang_disp = 0.0
-        new_pos_this_step: Dict[int, np.ndarray] = {}
+
+        # Collect all accepted candidate positions before mutating any object.
+        # Keys present   → label accepted the move this step.
+        # Keys absent    → label stays put (ang_vel zeroed below).
+        pending_pos:     Dict[int, np.ndarray] = {}   # new centre positions
+        pending_updates: Dict[int, Tuple[float, float, str]] = {}  # (cx, cy, anchor)
 
         for lid in moveable_ids:
             ol = moveable[lid]
             r_ideal = orbit_radius[lid]
-            
-            # Use raw torque for more visible movement
-            effective_torque = torque[lid]
 
             # Physics integration
-            ang_vel[lid] = (ang_vel[lid] + effective_torque * dt) * damp
+            ang_vel[lid] = (ang_vel[lid] + torque[lid] * dt) * damp
             dtheta = max(-MAX_DTHETA, min(MAX_DTHETA, ang_vel[lid] * dt))
 
-            # Current polar state
+            # Current polar state (always derived from pos[], never from ol)
             r_vec = pos[lid] - node_pos[lid]
             theta = math.atan2(float(r_vec[1]), float(r_vec[0]))
-            
-            # Proposed state
+
+            # Proposed Cartesian candidate
             theta_new = theta + dtheta
             current_r = float(np.linalg.norm(r_vec))
             r_new     = current_r + radial_k * (r_ideal - current_r)
-            
+
             candidate = node_pos[lid] + r_new * np.array([
                 math.cos(theta_new), math.sin(theta_new)
             ])
 
             # --- Validation Geometry ---
-            tw, th = _label_wh(ol)
+            # Use the pre-computed, immutable dimensions — never read from ol
+            # at this point, because ol may have been mutated by a previous
+            # step's deferred update.
+            tw, th = label_wh[lid]
             anchor_name = getattr(ol, "anchor", "center")
             cand_anchor_pts = _anchor_points(candidate[0], candidate[1], tw, th)
             anchor_pt = cand_anchor_pts[anchor_name]
-            
+
             candidate_binder = LineString([anchor_pt, node_pos[lid].tolist()])
             candidate_poly   = _label_bbox_polygon(candidate[0], candidate[1], tw, th)
 
             valid = True
 
             # Guard 1: Directional (ensure label stays 'outward')
-            node_outward = node_pos[lid] - np.array([outer_polygon.centroid.x, outer_polygon.centroid.y])
+            node_outward = node_pos[lid] - np.array([
+                outer_polygon.centroid.x, outer_polygon.centroid.y
+            ])
             label_outward = candidate - node_pos[lid]
             if np.dot(node_outward, label_outward) <= 0:
                 valid = False
 
-            # Guard 2: Topology (checks against other moveable labels in their STABLE positions)
-            if valid and not binding_line_valid(candidate_binder, ol.node_id, lid, G, [], moveable, label_candidates):
-                valid = False
+            # Guard 2: Topology (checks against other moveable labels using
+            # their step-start state — moveable objects are not yet mutated)
+            if valid:
+                synthetic_placed = []
+                for other_lid, other_ol in moveable.items():
+                    if other_lid == lid:
+                        continue
+                    op = pos[other_lid]   # step-start centre, never the mutated object
+                    synthetic_placed.append({
+                        "label_id":    other_lid,
+                        "position":    (float(op[0]), float(op[1])),
+                        "binding_line": getattr(other_ol, "binding_line", None),
+                    })
 
-            # Guard 3: Collision with static/fixed geometry
+                # Also include fixed overflow labels (non-moveable)
+                for other_lid, other_ol in overflow_labels.items():
+                    if other_lid in outer_overflow_ids:
+                        continue
+                    other_cx, other_cy = _label_center(other_ol)
+                    synthetic_placed.append({
+                        "label_id":    other_lid,
+                        "position":    (other_cx, other_cy),
+                        "binding_line": getattr(other_ol, "binding_line", None),
+                    })
+
+                if not binding_line_valid(
+                    candidate_binder, ol.node_id, lid, G,
+                    synthetic_placed,       # ← was [], now has real obstacles
+                    {**moveable, **{k: v for k, v in overflow_labels.items()
+                                    if k not in outer_overflow_ids}},
+                    label_candidates,
+                    soft=True
+                ):
+                    valid = False
+
+            # Guard 3: Collision with static / fixed geometry
             if valid and candidate_poly.intersects(placed_union):
                 valid = False
 
-            # Guard 4: Collision with other moveable labels
+            # Guard 4: Collision with other moveable labels.
+            # Use pos[] (step-start positions) together with pre-computed
+            # label_wh[] so that no other label's object state is read.
+            # This prevents the chimera geometry that occurred when earlier
+            # labels in the same step had already been mutated in-place.
             if valid:
-                for other_lid, other_ol in moveable.items():
-                    if other_lid == lid: continue
-                    op = pos[other_lid]
-                    other_poly = _label_bbox_polygon(op[0], op[1], *_label_wh(other_ol))
+                for other_lid in moveable_ids:
+                    if other_lid == lid:
+                        continue
+                    op = pos[other_lid]          # step-start position (stable)
+                    otw, oth = label_wh[other_lid]  # immutable dimensions
+                    other_poly = _label_bbox_polygon(op[0], op[1], otw, oth)
                     # Buffer -0.5 allows a tiny bit of "grease" so they don't lock up
                     if candidate_poly.intersects(other_poly.buffer(-0.5)):
                         valid = False
@@ -395,21 +445,24 @@ def refine_overflow_forces(
 
             # --- Stage Move ---
             if valid:
-                new_pos_this_step[lid] = candidate
-                # Actual object update
-                update_overflow_label_position(ol, candidate[0], candidate[1], anchor_name)
+                pending_pos[lid]     = candidate
+                pending_updates[lid] = (float(candidate[0]), float(candidate[1]), anchor_name)
                 max_ang_disp = max(max_ang_disp, abs(dtheta))
             else:
-                new_pos_this_step[lid] = pos[lid]
-                ang_vel[lid] = 0.0 
+                pending_pos[lid] = pos[lid]   # no movement
+                ang_vel[lid]     = 0.0
 
         # --- SYNC STEP ---
-        # Update the master 'pos' dictionary with all successful moves at once
-        pos.update(new_pos_this_step)
+        # Commit all accepted moves at once, *after* every label has been
+        # evaluated.  This guarantees that no label's validation saw a
+        # neighbour in a partially-updated state (the root cause of the
+        # invalid-position bug).
+        pos.update(pending_pos)
+        for lid, (cx, cy, anchor_name) in pending_updates.items():
+            update_overflow_label_position(moveable[lid], cx, cy, anchor_name)
 
-        avg_reversals = sum(reversals.values()) / len(moveable_ids) if moveable_ids else 0
         if step % 100 == 0 or step == steps - 1:
-            print(f"Step {step} | MaxDisp: {max_ang_disp:.6f} | Avg Reversals: {avg_reversals:.1f}")
+            print(f"Step {step} | MaxDisp: {max_ang_disp:.6f}")
 
         # 5. Early convergence check
         if max_ang_disp < convergence_eps:
