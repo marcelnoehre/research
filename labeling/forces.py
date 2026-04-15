@@ -60,11 +60,12 @@ import copy
 from typing import Dict, List, Tuple
 
 import numpy as np
-from shapely import Polygon
+from shapely import Polygon, unary_union
 from shapely.geometry import LineString, Point
 
 from label import LabelCandidate, OverflowLabel
 from overflow_bounded import (
+    _anchor_points,
     _label_wh,
     _label_bbox_polygon,
     update_overflow_label_position,
@@ -76,16 +77,17 @@ from overflow_bounded import (
 # fixed radius (= its current binder length). Repulsion is projected onto
 # the tangent so labels never drift radially away from the drawing.
 
-REFINE_DT           = 0.02   # angular step scale (radians per unit force)
-REFINE_STEPS        = 200    # max iterations
-REFINE_DAMP         = 0.3   # angular velocity damping per step
+REFINE_DT           = 0.01   # angular step scale (radians per unit force)
+REFINE_STEPS        = 1000    # max iterations
+REFINE_DAMP         = 0.7   # angular velocity damping per step
 
-REPULSION_STRENGTH  = 5.0    # label-label tangential repulsion scalar
+REPULSION_STRENGTH  = 100.0    # label-label tangential repulsion scalar
 REPULSION_MIN_DIST  = 1.0    # soft floor on repulsion distance (world units)
 
 # Radial correction: small restoring nudge if the label has drifted off its
 # original binder length (e.g. due to bbox snapping). Keep this weak.
 RADIAL_K            = 0.10   # spring constant pulling back to original radius
+MAX_DTHETA          = 0.05   # roughly 3 degrees per step
 
 # Boundary cushion: pushes label tangentially away from polygon corners.
 CUSHION_RADIUS      = 1.0    # world units from boundary that triggers cushion
@@ -248,6 +250,12 @@ def refine_overflow_forces(
     outer_positions = [G.nodes[n]["pos"] for n in outer_nodes]
     outer_polygon   = Polygon(outer_positions)
 
+    placed_union = unary_union([
+        Polygon(cand.expanded_bbox_corners)
+        for cands in label_candidates.values()
+        for cand in cands
+    ]) if label_candidates else Polygon()
+
     # ── snapshot ──────────────────────────────────────────────────────────────
     moveable: Dict[int, OverflowLabel] = {
         lid: copy.deepcopy(overflow_labels[lid])
@@ -282,15 +290,6 @@ def refine_overflow_forces(
         if lid not in outer_overflow_ids:
             cx, cy = _label_center(ol)
             all_fixed_centers.append(np.array([cx, cy], dtype=float))
-
-    # Anchor-offset lookup (for binder validation)
-    _ANCHOR_OFFSETS = {
-        "top_left":     ( -1,  1), "top_right":    ( 1,  1),
-        "bottom_left":  ( -1, -1), "bottom_right": ( 1, -1),
-        "top":          (  0,  1), "bottom":        (  0, -1),
-        "left":         ( -1,  0), "right":         (  1,  0),
-        "center":       (  0,  0),
-    }
 
     moveable_ids = list(moveable.keys())
 
@@ -330,60 +329,87 @@ def refine_overflow_forces(
             )
 
         # 4. Integrate angular velocity → new angle → new Cartesian position
+        reversals = {lid: 0 for lid in moveable_ids}
         max_ang_disp = 0.0
-        new_pos: Dict[int, np.ndarray] = {}
+        new_pos_this_step: Dict[int, np.ndarray] = {}
 
         for lid in moveable_ids:
             ol = moveable[lid]
-            effective_torque = torque[lid] / orbit_radius[lid]
+            r_ideal = orbit_radius[lid]
+            
+            # Use raw torque for more visible movement
+            effective_torque = torque[lid]
 
+            # Physics integration
             ang_vel[lid] = (ang_vel[lid] + effective_torque * dt) * damp
-            dtheta        = ang_vel[lid] * dt
-            max_ang_disp  = max(max_ang_disp, abs(dtheta))
+            dtheta = max(-MAX_DTHETA, min(MAX_DTHETA, ang_vel[lid] * dt))
 
-            # Current angle of label around its node
+            # Current polar state
             r_vec = pos[lid] - node_pos[lid]
             theta = math.atan2(float(r_vec[1]), float(r_vec[0]))
-
-            # Proposed new angle
+            
+            # Proposed state
             theta_new = theta + dtheta
-
-            # Radial corrector: restore to original orbit radius
             current_r = float(np.linalg.norm(r_vec))
-            target_r  = orbit_radius[lid]
-            r_new     = current_r + radial_k * (target_r - current_r)
-            r_new     = max(r_new, 1e-3)
-
+            r_new     = current_r + radial_k * (r_ideal - current_r)
+            
             candidate = node_pos[lid] + r_new * np.array([
                 math.cos(theta_new), math.sin(theta_new)
             ])
 
-            node_outward = node_pos[lid] - np.array([outer_polygon.centroid.x, outer_polygon.centroid.y])
-            label_outward = candidate - node_pos[lid]
-            is_pointing_out = np.dot(node_outward, label_outward) > 0
-
-            # ── binder validity guard ─────────────────────────────────────────
+            # --- Validation Geometry ---
             tw, th = _label_wh(ol)
             anchor_name = getattr(ol, "anchor", "center")
-            sx, sy = _ANCHOR_OFFSETS.get(anchor_name, (0, 0))
-            anchor_pt = candidate + np.array([sx * tw / 2, sy * th / 2])
-            binder_line = LineString([anchor_pt.tolist(), node_pos[lid].tolist()])
+            cand_anchor_pts = _anchor_points(candidate[0], candidate[1], tw, th)
+            anchor_pt = cand_anchor_pts[anchor_name]
+            
+            candidate_binder = LineString([anchor_pt, node_pos[lid].tolist()])
+            candidate_poly   = _label_bbox_polygon(candidate[0], candidate[1], tw, th)
 
-            binder_ok = is_pointing_out and binding_line_valid(
-                binder_line,
-                ol.node_id, lid,
-                G, [],
-                overflow_labels, label_candidates,
-                soft=True,
-            )
+            valid = True
 
-            if binder_ok:
-                new_pos[lid] = candidate
+            # Guard 1: Directional (ensure label stays 'outward')
+            node_outward = node_pos[lid] - np.array([outer_polygon.centroid.x, outer_polygon.centroid.y])
+            label_outward = candidate - node_pos[lid]
+            if np.dot(node_outward, label_outward) <= 0:
+                valid = False
+
+            # Guard 2: Topology (checks against other moveable labels in their STABLE positions)
+            if valid and not binding_line_valid(candidate_binder, ol.node_id, lid, G, [], moveable, label_candidates):
+                valid = False
+
+            # Guard 3: Collision with static/fixed geometry
+            if valid and candidate_poly.intersects(placed_union):
+                valid = False
+
+            # Guard 4: Collision with other moveable labels
+            if valid:
+                for other_lid, other_ol in moveable.items():
+                    if other_lid == lid: continue
+                    op = pos[other_lid]
+                    other_poly = _label_bbox_polygon(op[0], op[1], *_label_wh(other_ol))
+                    # Buffer -0.5 allows a tiny bit of "grease" so they don't lock up
+                    if candidate_poly.intersects(other_poly.buffer(-0.5)):
+                        valid = False
+                        break
+
+            # --- Stage Move ---
+            if valid:
+                new_pos_this_step[lid] = candidate
+                # Actual object update
+                update_overflow_label_position(ol, candidate[0], candidate[1], anchor_name)
+                max_ang_disp = max(max_ang_disp, abs(dtheta))
             else:
-                new_pos[lid] = pos[lid]
-                ang_vel[lid] = 0.0
+                new_pos_this_step[lid] = pos[lid]
+                ang_vel[lid] = 0.0 
 
-        pos = new_pos
+        # --- SYNC STEP ---
+        # Update the master 'pos' dictionary with all successful moves at once
+        pos.update(new_pos_this_step)
+
+        avg_reversals = sum(reversals.values()) / len(moveable_ids) if moveable_ids else 0
+        if step % 100 == 0 or step == steps - 1:
+            print(f"Step {step} | MaxDisp: {max_ang_disp:.6f} | Avg Reversals: {avg_reversals:.1f}")
 
         # 5. Early convergence check
         if max_ang_disp < convergence_eps:
