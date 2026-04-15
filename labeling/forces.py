@@ -438,8 +438,7 @@ def refine_overflow_forces(
                     op = pos[other_lid]          # step-start position (stable)
                     otw, oth = label_wh[other_lid]  # immutable dimensions
                     other_poly = _label_bbox_polygon(op[0], op[1], otw, oth)
-                    # Buffer -0.5 allows a tiny bit of "grease" so they don't lock up
-                    if candidate_poly.intersects(other_poly.buffer(-0.5)):
+                    if candidate_poly.intersects(other_poly):
                         valid = False
                         break
 
