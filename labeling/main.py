@@ -11,11 +11,12 @@ from plotting import *
 from overflow_bounded import *
 from overflow_unbounded import *
 from post_processing import *
+from forces import *
 
 ################################################################################ 
 # Data
 ################################################################################
-FILE = 'car'
+FILE = 'convex-ordinal'
 parser = Parser()
 cxt = parser.decode_cxt(f'../data/{FILE}.cxt')
 print(cxt.print_data())
@@ -336,6 +337,26 @@ overflow_candidates = adjust_anchors(G, label_candidates, overflow_candidates, u
 plot_lattice(
     G, cxt, lattice.nodes, coords,
     output_path="figs/adjust_anchors.pdf",
+    intersections=intersection_points,
+    cycles=bounded_faces,
+    areas=areas,
+    centers=centers,
+    label_candidates=label_candidates,
+    label_texts=label_texts,
+    show_label_candidates=True,
+    colored_label_candidates=True,
+    overflow_labels=overflow_candidates,
+    show_overflow_labels=True
+)
+
+################################################################################
+# Force Based Refinement
+################################################################################
+overflow_candidates = refine_overflow_forces(overflow_candidates, unbounded_overflow_labels, label_candidates, outer_nodes, G)
+
+plot_lattice(
+    G, cxt, lattice.nodes, coords,
+    output_path="figs/force_refinement.pdf",
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,

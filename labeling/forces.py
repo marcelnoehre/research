@@ -1,558 +1,404 @@
 """
-outer_overflow_forces.py
+refine_overflow_forces.py
 
-Force-based refinement pass for outer overflow label positions.
+Post-assignment physics refinement for outer overflow labels.
 
-After the Hungarian assignment (outer_overflow_global.py) has produced an
-initial placement, this module iteratively nudges each label's (cx, cy) centre
-using a sum of physical-analogy forces until the system converges or a maximum
-number of steps is reached.
+After the Hungarian global assignment phase has placed every label, small
+residual overlaps can remain. This module runs a lightweight force-directed
+simulation to nudge only the labels in `outer_overflow_ids` into cleaner
+positions while keeping them outside the boundary polygon.
 
-Forces applied every step
-─────────────────────────
-  F_rep_label   : labels repel each other (inverse-square of gap between bboxes)
-  F_att_label   : soft spring that prevents labels from drifting too far apart
-                  (only fires when the inter-label gap exceeds a rest length)
-  F_rep_binder  : label repelled from its *own* binding line and from all
-                  other binding lines
-  F_angle       : gradient that nudges the label to widen the angular gap
-                  between its binding line and the nearest neighbour binder
-  F_crossing    : penalty gradient that pushes a label away from positions
-                  where its binder would cross another binder
+Physics model
+─────────────
+  Repulsion   : Every moveable label repels every other moveable label AND
+                every fixed label_candidate box. Uses a soft inverse-square
+                law so forces remain bounded.
 
-Validity check (per micro-step)
-────────────────────────────────
-  After accumulating forces the candidate new position is rejected (label stays)
-  if the expanded bbox would
-    • re-enter the outer polygon
-    • overlap already-placed (inner) label geometry
-    • cause binding_line_valid() to return False
+  Elastic binder ("soft spring")
+              : Each moveable label is tethered to its source node by a
+                nonlinear spring that has *low* tension near an ideal length
+                (SPRING_IDEAL ~20 units) but rises steeply beyond
+                SPRING_SLACK_MAX to prevent drift. The transition is
+                piecewise:
+                   |d - ideal| ≤ slack   →  k_soft  * deviation
+                   |d - ideal| > slack   →  k_hard  * deviation²
+                This keeps the binder "soft" at comfortable distances while
+                acting as a hard backstop against infinite drift.
 
-Usage
-─────
-  from outer_overflow_forces import refine_label_positions
+  Boundary cushion
+              : Uses outer_polygon.distance() to detect proximity. Within
+                CUSHION_RADIUS of the boundary a strong repulsive force
+                pushes the label away. Beyond that radius there is no force.
 
-  result_map = refine_label_positions(
-      overflow_candidates, # {node_id: OverflowLabel}  (already positioned)
-      outer_polygon,       # Shapely Polygon
-      placed_union,        # Shapely geometry – inner labels already placed
-      G,                   # networkx Graph
-      label_candidates,    # Dict[int, List[LabelCandidate]]
-  )
-  # returns updated {node_id: OverflowLabel}
+Validity
+────────
+  After every step the binder is re-checked with binding_line_valid(soft=True)
+  so labels are never allowed to drift into a topologically invalid state.
+  If a proposed step would invalidate the binder the step is dropped for
+  that label this tick (the label stays put).
+
+Tunables (module-level constants)
+──────────────────────────────────
+  REFINE_DT            time step (world units per iteration)
+  REFINE_STEPS         maximum simulation iterations
+  REFINE_DAMP          velocity damping factor per step (0–1)
+  REPULSION_STRENGTH   scalar for label-label / label-fixed repulsion
+  REPULSION_MIN_DIST   soft floor on repulsion denominator (avoids ÷0)
+  SPRING_IDEAL         preferred binder length (world units)
+  SPRING_SLACK         half-width of the "comfortable zone"
+  SPRING_K_SOFT        spring constant inside the comfortable zone
+  SPRING_K_HARD        spring constant outside the comfortable zone
+  CUSHION_RADIUS       distance from polygon at which cushion force starts
+  CUSHION_STRENGTH     scalar for cushion repulsion
+  CONVERGENCE_EPS      stop early when max displacement < this value
 """
 
 from __future__ import annotations
 
-import copy
 import math
-from typing import Dict, List, Optional, Tuple
+import copy
+from typing import Dict, List, Tuple
 
 import numpy as np
-from shapely.geometry import LineString, Point, Polygon
-from shapely import unary_union
-import networkx as nx
+from shapely import Polygon
+from shapely.geometry import LineString, Point
 
 from label import LabelCandidate, OverflowLabel
 from overflow_bounded import (
-    _label_wh_expanded,
+    _label_wh,
     _label_bbox_polygon,
-    binding_line_valid,
     update_overflow_label_position,
+    binding_line_valid,
 )
 
-# ── tunables ──────────────────────────────────────────────────────────────────
+# ── tunables ─────────────────────────────────────────────────────────────────
+# Tangential-orbit model: each label slides around its source node at a
+# fixed radius (= its current binder length). Repulsion is projected onto
+# the tangent so labels never drift radially away from the drawing.
 
-# simulation
-MAX_ITERS           = 300
-DT                  = 0.08      # base time-step (world units per step)
-DAMPING             = 0.55      # velocity damping each step (0 = no inertia)
-CONVERGENCE_DELTA   = 1e-3      # stop when max label displacement < this
+REFINE_DT           = 0.02   # angular step scale (radians per unit force)
+REFINE_STEPS        = 200    # max iterations
+REFINE_DAMP         = 0.3   # angular velocity damping per step
 
-# repulsion: label ↔ label
-REP_LABEL_K         = 3.0       # reduced — gap-centering handles long-range spreading
-REP_LABEL_CUTOFF    = 20.0      # wider so labels still feel each other when separated
+REPULSION_STRENGTH  = 5.0    # label-label tangential repulsion scalar
+REPULSION_MIN_DIST  = 1.0    # soft floor on repulsion distance (world units)
 
-# attraction: label ↔ label
-# disabled — tangential attraction fights gap-centering; set K > 0 to re-enable
-ATT_LABEL_K         = 0.0
-ATT_LABEL_REST      = 4.0
-ATT_LABEL_CUTOFF    = 20.0
+# Radial correction: small restoring nudge if the label has drifted off its
+# original binder length (e.g. due to bbox snapping). Keep this weak.
+RADIAL_K            = 0.10   # spring constant pulling back to original radius
 
-# repulsion: label ↔ binder lines
-REP_BINDER_K        = 5.0
-REP_BINDER_CUTOFF   = 5.0
+# Boundary cushion: pushes label tangentially away from polygon corners.
+CUSHION_RADIUS      = 1.0    # world units from boundary that triggers cushion
+CUSHION_STRENGTH    = 2.0    # tangential nudge strength near boundary
 
-# angular gap centering — pulls each label to the midpoint of its largest free arc
-ANG_CENTER_K        = 3.5
-# secondary nearest-neighbour push (only fires when angle is very tight)
-ANG_SPREAD_K        = 1.5
-ANG_SPREAD_MIN_DEG  = 10.0
+CONVERGENCE_EPS     = 1e-7  # stop when max angular displacement < this (rad)
 
-# crossing penalty
-CROSS_K             = 40.0      # strength of anti-crossing gradient
-CROSS_EPSILON       = 0.3       # finite-difference step for crossing gradient
-
-# validity / clamping
-MAX_STEP_SIZE       = 1.5       # hard cap on displacement per step (world units)
-OUTER_MARGIN        = 0.3       # keep expanded bbox at least this far outside polygon
 
 # ── internal helpers ──────────────────────────────────────────────────────────
 
-def _ink_wh(label: OverflowLabel) -> Tuple[float, float]:
-    bl, br, _, tl = label.inner_bbox_corners
-    return abs(br[0] - bl[0]), abs(tl[1] - bl[1])
+def _label_center(ol: OverflowLabel) -> Tuple[float, float]:
+    """Return the geometric centre (cx, cy) of an OverflowLabel."""
+    bl, br, tr, tl = ol.inner_bbox_corners
+    return (
+        (bl[0] + br[0] + tr[0] + tl[0]) / 4.0,
+        (bl[1] + br[1] + tr[1] + tl[1]) / 4.0,
+    )
 
 
-def _expanded_half(label: OverflowLabel) -> Tuple[float, float]:
-    ew, eh = _label_wh_expanded(label)
-    return ew / 2.0, eh / 2.0
+def _tangent_ccw(radial: np.ndarray) -> np.ndarray:
+    """Unit tangent 90° counter-clockwise from a radial unit vector."""
+    return np.array([-radial[1], radial[0]])
 
-def _bbox_gap(
-    cx_a: float, cy_a: float, hw_a: float, hh_a: float,
-    cx_b: float, cy_b: float, hw_b: float, hh_b: float,
+
+def _tangential_repulsion(
+    pos_a: np.ndarray,
+    node_a: np.ndarray,
+    pos_b: np.ndarray,
+    strength: float,
+    min_dist: float,
 ) -> float:
-    '''
-    Gap between two axis-aligned bboxes (negative = overlap).
-    '''
-    dx = abs(cx_a - cx_b) - (hw_a + hw_b)
-    dy = abs(cy_a - cy_b) - (hh_a + hh_b)
-    return max(dx, dy)   # positive = separated; gap is the smaller axis
-
-
-def _point_to_segment_dist(px, py, ax, ay, bx, by) -> float:
-    '''
-    Euclidean distance from point P to segment AB.
-    '''
-    abx, aby = bx - ax, by - ay
-    len_sq   = abx * abx + aby * aby
-    if len_sq < 1e-12:
-        return math.hypot(px - ax, py - ay)
-    t = max(0.0, min(1.0, ((px - ax) * abx + (py - ay) * aby) / len_sq))
-    return math.hypot(px - (ax + t * abx), py - (ay + t * aby))
-
-
-def _closest_point_on_segment(px, py, ax, ay, bx, by) -> Tuple[float, float]:
-    abx, aby = bx - ax, by - ay
-    len_sq   = abx * abx + aby * aby
-    if len_sq < 1e-12:
-        return ax, ay
-    t = max(0.0, min(1.0, ((px - ax) * abx + (py - ay) * aby) / len_sq))
-    return ax + t * abx, ay + t * aby
-
-
-def _segments_cross(ax, ay, bx, by, cx2, cy2, dx, dy) -> bool:
-    '''
-    Check wether segment AB strictly crosses segment CD.
-    '''
-    def _cross2(ux, uy, vx, vy):
-        return ux * vy - uy * vx
-    denom = _cross2(bx - ax, by - ay, dx - cx2, dy - cy2)
-    if abs(denom) < 1e-10:
-        return False
-    t = _cross2(cx2 - ax, cy2 - ay, dx - cx2, dy - cy2) / denom
-    u = _cross2(cx2 - ax, cy2 - ay, bx - ax, by - ay) / denom
-    return 1e-6 < t < 1.0 - 1e-6 and 1e-6 < u < 1.0 - 1e-6
-
-# Forces
-def _force_rep_label(
-    i: int,
-    states: List[dict],
-) -> Tuple[float, float]:
-    '''
-    Repulsion from all other labels (inverse-square on bbox gap).
-    '''
-    fx = fy = 0.0
-    si = states[i]
-    for j, sj in enumerate(states):
-        if i == j:
-            continue
-        gap = _bbox_gap(si['cx'], si['cy'], si['hw'], si['hh'],
-                        sj['cx'], sj['cy'], sj['hw'], sj['hh'])
-        if gap > REP_LABEL_CUTOFF:
-            continue
-        dx = si['cx'] - sj['cx']
-        dy = si['cy'] - sj['cy']
-        dist = math.hypot(dx, dy)
-        if dist < 1e-6:
-            dx, dy, dist = 1.0, 0.0, 1.0
-        effective = max(-gap, 0.1)
-        mag = REP_LABEL_K * effective / (dist * dist)
-        fx += mag * dx / dist
-        fy += mag * dy / dist
-    return fx, fy
-
-
-def _force_att_label(
-    i: int,
-    states: List[dict],
-) -> Tuple[float, float]:
-    '''
-    Spring attraction toward neighbours that have drifted too far.
-    '''
-    fx = fy = 0.0
-    si = states[i]
-    for j, sj in enumerate(states):
-        if i == j:
-            continue
-        gap = _bbox_gap(si['cx'], si['cy'], si['hw'], si['hh'],
-                        sj['cx'], sj['cy'], sj['hw'], sj['hh'])
-        if gap < ATT_LABEL_REST or gap > ATT_LABEL_CUTOFF:
-            continue
-        dx = sj['cx'] - si['cx']
-        dy = sj['cy'] - si['cy']
-        dist = math.hypot(dx, dy) or 1e-6
-        extension = gap - ATT_LABEL_REST
-        mag = ATT_LABEL_K * extension
-        fx += mag * dx / dist
-        fy += mag * dy / dist
-    return fx, fy
-
-
-def _force_rep_binders(
-    i: int,
-    states: List[dict],
-) -> Tuple[float, float]:
-    '''
-    Repel label i from all binding lines.
-    '''
-    fx = fy = 0.0
-    si = states[i]
-    cx, cy = si['cx'], si['cy']
-
-    for j, sj in enumerate(states):
-        np_x, np_y = sj['node_pos']
-        ax, ay      = sj['cx'], sj['cy']
-        dist = _point_to_segment_dist(cx, cy, ax, ay, np_x, np_y)
-        if dist > REP_BINDER_CUTOFF or dist < 1e-6:
-            continue
-        # push direction: away from closest point on binder
-        qx, qy = _closest_point_on_segment(cx, cy, ax, ay, np_x, np_y)
-        dx, dy  = cx - qx, cy - qy
-        d       = math.hypot(dx, dy) or 1e-6
-        mag = REP_BINDER_K / (dist * dist)
-        fx += mag * dx / d
-        fy += mag * dy / d
-    return fx, fy
-
-def _force_angular_spread(
-    i: int,
-    states: List[dict],
-    centroid: Tuple[float, float],
-) -> Tuple[float, float]:
     """
-    Two-part angular force:
+    Scalar tangential force on label A caused by label B.
 
-    1. Gap-centering (primary): find the largest free angular arc around label i,
-       then pull it tangentially toward that arc's midpoint.  This reliably
-       centers labels in open space regardless of how far apart they are.
+    Projects the repulsion vector (A←B) onto the tangent of A's orbit
+    around its own source node. This means B can only push A *sideways*
+    around its orbit — never radially outward.
 
-    2. Nearest-neighbour push (secondary): if the smallest neighbouring angle
-       is below ANG_SPREAD_MIN_DEG, add a small extra push away from that
-       neighbour.  Acts as a last-resort separator for very crowded layouts.
+    Returns a signed scalar: positive = push CCW, negative = push CW.
     """
-    si = states[i]
-    cx, cy     = si['cx'], si['cy']
-    np_x, np_y = si['node_pos']
+    delta = pos_a - pos_b
+    dist  = float(np.linalg.norm(delta))
+    if dist < 1e-9:
+        delta = np.array([1.0, 0.0])
+        dist  = 1.0
 
-    # Angle of label i's binder as seen from the centroid
-    angle_i = math.atan2(cy - centroid[1], cx - centroid[0])
+    d_eff      = max(dist, min_dist)
+    repel_vec  = (strength / d_eff) * (delta / dist)   # 1/d falloff (gentler)
 
-    # Collect all other binder angles, sorted
-    other_angles = []
-    for j, sj in enumerate(states):
-        if i == j:
-            continue
-        angle_j = math.atan2(sj['cy'] - centroid[1], sj['cx'] - centroid[0])
-        other_angles.append(angle_j)
+    # radial unit vector from node_a toward pos_a
+    r_vec = pos_a - node_a
+    r_len = float(np.linalg.norm(r_vec))
+    if r_len < 1e-9:
+        return 0.0
+    radial  = r_vec / r_len
+    tangent = _tangent_ccw(radial)
 
-    fx = fy = 0.0
-
-    # gap centering
-    if other_angles:
-        # Build arcs: gaps between consecutive neighbour angles (sorted circle)
-        sorted_others = sorted(other_angles)
-        n_others = len(sorted_others)
-
-        # Find which arc label i currently sits in and the midpoint of the
-        # largest arc among all arcs (treating label i's slot as part of it).
-        arcs = []
-        for k in range(n_others):
-            a_left  = sorted_others[k]
-            a_right = sorted_others[(k + 1) % n_others]
-            arc_size = (a_right - a_left) % (2 * math.pi)
-            mid      = a_left + arc_size / 2.0
-            arcs.append((arc_size, mid))
-
-        # Largest arc midpoint → target angle for label i
-        best_arc_size, target_angle = max(arcs, key=lambda x: x[0])
-
-        # Angular error (signed, shortest path)
-        error = (target_angle - angle_i + math.pi) % (2 * math.pi) - math.pi
-
-        # Only pull if error is non-trivial (> 2°)
-        if abs(error) > math.radians(2.0):
-            mag = ANG_CENTER_K * abs(error)
-            # Tangential direction at current radial position
-            radial_angle = math.atan2(cy - centroid[1], cx - centroid[0])
-            sign = 1.0 if error > 0 else -1.0
-            tx = -math.sin(radial_angle) * sign
-            ty =  math.cos(radial_angle) * sign
-            fx += mag * tx
-            fy += mag * ty
-
-    # ── part 2: nearest-neighbour push ──────────────────────────────────────
-    min_dangle   = math.pi
-    tangent_sign = 1.0
-    for angle_j in other_angles:
-        dangle = (angle_i - angle_j + math.pi) % (2 * math.pi) - math.pi
-        if abs(dangle) < abs(min_dangle):
-            min_dangle   = dangle
-            tangent_sign = 1.0 if dangle > 0 else -1.0
-
-    threshold = math.radians(ANG_SPREAD_MIN_DEG)
-    if abs(min_dangle) < threshold:
-        deficit = threshold - abs(min_dangle)
-        mag     = ANG_SPREAD_K * deficit
-        radial_angle = math.atan2(cy - centroid[1], cx - centroid[0])
-        tx = -math.sin(radial_angle) * tangent_sign
-        ty =  math.cos(radial_angle) * tangent_sign
-        fx += mag * tx
-        fy += mag * ty
-
-    return fx, fy
+    return float(np.dot(repel_vec, tangent))   # signed tangential component
 
 
-def _force_anti_crossing(
-    i: int,
-    states: List[dict],
-) -> Tuple[float, float]:
+def _boundary_tangential_cushion(
+    pos_a: np.ndarray,
+    node_a: np.ndarray,
+    outer_polygon,
+    cushion_radius: float,
+    cushion_strength: float,
+) -> float:
     """
-    Numerical gradient: try small displacements of label i and push away from
-    positions that create binder crossings.
+    If the label is within `cushion_radius` of the polygon boundary, produce
+    a signed tangential nudge that pushes it away from the nearest boundary
+    point — projected onto the orbit tangent, so it slides along the radius
+    rather than drifting outward.
     """
-    si = states[i]
-    cx, cy  = si['cx'], si['cy']
-    np_x, np_y = si['node_pos']
+    pt   = Point(float(pos_a[0]), float(pos_a[1]))
+    dist = outer_polygon.boundary.distance(pt)
+    if dist >= cushion_radius or dist < 1e-9:
+        return 0.0
 
-    # count crossings for a given (cx, cy)
-    def crossings(tcx, tcy) -> int:
-        count = 0
-        for j, sj in enumerate(states):
-            if i == j:
-                continue
-            jnp_x, jnp_y = sj['node_pos']
-            if _segments_cross(tcx, tcy, np_x, np_y,
-                               sj['cx'], sj['cy'], jnp_x, jnp_y):
-                count += 1
-        return count
+    nearest = outer_polygon.boundary.interpolate(
+        outer_polygon.boundary.project(pt)
+    )
+    away = pos_a - np.array([nearest.x, nearest.y])
+    away_len = float(np.linalg.norm(away))
+    if away_len < 1e-9:
+        return 0.0
+    away_unit = away / away_len
 
-    base = crossings(cx, cy)
-    if base == 0:
-        return 0.0, 0.0
+    r_vec = pos_a - node_a
+    r_len = float(np.linalg.norm(r_vec))
+    if r_len < 1e-9:
+        return 0.0
+    tangent = _tangent_ccw(r_vec / r_len)
 
-    eps = CROSS_EPSILON
-    gx = (crossings(cx + eps, cy) - crossings(cx - eps, cy)) / (2 * eps)
-    gy = (crossings(cx, cy + eps) - crossings(cx, cy - eps)) / (2 * eps)
-
-    mag = math.hypot(gx, gy)
-    if mag < 1e-6:
-        return 0.0, 0.0
-
-    return -CROSS_K * gx / mag, -CROSS_K * gy / mag
+    proximity = 1.0 - dist / cushion_radius
+    magnitude = cushion_strength * proximity ** 2
+    return float(np.dot(magnitude * away_unit, tangent))
 
 
-# validity of a candidate position
-def _position_valid(
-    cx: float, cy: float,
-    hw: float, hh: float,
-    node_pos: Tuple[float, float],
-    own_node_id: int,
-    own_label_id: int,
-    outer_polygon: Polygon,
-    placed_union,
-    G,
-    all_overflow: Dict,
-    label_candidates,
-    ol: OverflowLabel,
-) -> bool:
-    exp_bbox = _label_bbox_polygon(cx, cy, hw * 2, hh * 2)
-
-    # must stay outside the outer polygon
-    if outer_polygon.intersects(exp_bbox):
-        return False
-
-    # must not overlap inner placed labels
-    if placed_union.intersects(exp_bbox):
-        return False
-
-    # binding line validity (checks for ink / label intersections)
-    iw, ih  = _ink_wh(ol)
-    own_ink = _label_bbox_polygon(cx, cy, iw, ih)
-    line    = LineString([(cx, cy), node_pos])
-    if own_ink.intersects(line):
-        return False
-    if not binding_line_valid(
-        line, own_node_id, own_label_id,
-        G, [], all_overflow, label_candidates, soft=True,
-    ):
-        return False
-
-    return True
-
-
-# ── main refinement entry point ───────────────────────────────────────────────
-
-def refine_label_positions(
-    overflow_candidates: Dict[int, OverflowLabel],
-    outer_nodes: List[int],
-    G: nx.Graph,
+def _fixed_label_centers(
     label_candidates: Dict[int, List[LabelCandidate]],
+) -> List[np.ndarray]:
+    """
+    Collect centre-points of all fixed LabelCandidate boxes so the moveable
+    labels are repelled from them.
+    """
+    centers = []
+    for cands in label_candidates.values():
+        for cand in cands:
+            corners = cand.expanded_bbox_corners
+            cx = sum(c[0] for c in corners) / len(corners)
+            cy = sum(c[1] for c in corners) / len(corners)
+            centers.append(np.array([cx, cy], dtype=float))
+    return centers
+
+
+# ── public API ────────────────────────────────────────────────────────────────
+
+def refine_overflow_forces(
+    overflow_labels:    Dict[int, OverflowLabel],
+    outer_overflow_ids: List[int],
+    label_candidates:   Dict[int, List[LabelCandidate]],
+    outer_nodes:    List[int],
+    G,
     *,
-    max_iters: int = MAX_ITERS,
-    dt: float = DT,
-    verbose: bool = False,
+    dt:                 float = REFINE_DT,
+    steps:              int   = REFINE_STEPS,
+    damp:               float = REFINE_DAMP,
+    repulsion_strength: float = REPULSION_STRENGTH,
+    repulsion_min_dist: float = REPULSION_MIN_DIST,
+    radial_k:           float = RADIAL_K,
+    cushion_radius:     float = CUSHION_RADIUS,
+    cushion_strength:   float = CUSHION_STRENGTH,
+    convergence_eps:    float = CONVERGENCE_EPS,
 ) -> Dict[int, OverflowLabel]:
     """
-    Refine the positions of already-placed outer overflow labels using a
-    force-directed simulation.
+    Refine the positions of `outer_overflow_ids` labels using a tangential
+    orbit simulation after the global Hungarian assignment phase.
+
+    Each moveable label orbits its source node at its *current* binder
+    radius (locked from Phase 2). Repulsion between labels is projected onto
+    the orbit tangent, so labels slide sideways to make room for each other
+    rather than drifting radially away from the drawing. A weak radial
+    corrector keeps the binder length stable if floating-point drift occurs.
 
     Parameters
     ----------
-    overflow_candidates : {node_id -> OverflowLabel} — already positioned
-                          (e.g. result_map from outer_overflow_labels).
-                          Objects are deep-copied; originals are not modified.
-    outer_polygon       : convex hull polygon of outer nodes
-    placed_union        : Shapely geometry of already-placed inner labels
-    G                   : the graph
-    label_candidates    : inner label candidates (for binding_line_valid)
-    max_iters           : simulation step budget
-    dt                  : time-step size
-    verbose             : print per-iteration diagnostics
+    overflow_labels    : full dict of all overflow labels (read-only for fixed ones)
+    outer_overflow_ids : the subset of label IDs that are allowed to move
+    label_candidates   : fixed internal labels (static obstacles for repulsion)
+    outer_polygon      : Shapely Polygon defining the outer boundary
+    G                  : NetworkX graph (used to look up node positions)
 
     Returns
     -------
-    Dict[int, OverflowLabel] with updated positions (same keys as input)
+    Updated dict of overflow_labels with refined positions for outer_overflow_ids.
     """
+    if not outer_overflow_ids:
+        return dict(overflow_labels)
+
     outer_positions = [G.nodes[n]["pos"] for n in outer_nodes]
     outer_polygon   = Polygon(outer_positions)
 
-    placed_union = unary_union([
-        Polygon(cand.expanded_bbox_corners)
-        for cands in label_candidates.values()
-        for cand in cands
-    ]) if label_candidates else Polygon()
+    # ── snapshot ──────────────────────────────────────────────────────────────
+    moveable: Dict[int, OverflowLabel] = {
+        lid: copy.deepcopy(overflow_labels[lid])
+        for lid in outer_overflow_ids
+        if lid in overflow_labels
+    }
 
-    # ── build simulation state ────────────────────────────────────────────────
-    placed_ids = list(overflow_candidates.keys())
-    if not placed_ids:
-        return {}
+    # Current centre positions
+    pos: Dict[int, np.ndarray] = {}
+    for lid, ol in moveable.items():
+        cx, cy = _label_center(ol)
+        pos[lid] = np.array([cx, cy], dtype=float)
 
-    ol_map = {nid: copy.deepcopy(ol) for nid, ol in overflow_candidates.items()}
+    # Source-node positions
+    node_pos: Dict[int, np.ndarray] = {}
+    for lid, ol in moveable.items():
+        raw = G.nodes[ol.node_id]["pos"]
+        node_pos[lid] = np.array(raw, dtype=float)
 
-    states: List[dict] = []
-    for nid in placed_ids:
-        ol     = ol_map[nid]
-        hw, hh = _expanded_half(ol)
-        # ol.center is the current (cx, cy) after update_overflow_label_position
-        cx, cy = ol.center
-        states.append({
-            'node_id':      nid,
-            'own_node_id':  ol.node_id,
-            'cx':           cx,
-            'cy':           cy,
-            'hw':           hw,
-            'hh':           hh,
-            'node_pos':     G.nodes[ol.node_id]['pos'],
-            'anchor_name':  ol.anchor,
-            'ol':           ol,
-            'vx':           0.0,
-            'vy':           0.0,
-        })
+    # Lock each label's orbit radius to its current binder length
+    orbit_radius: Dict[int, float] = {}
+    for lid in moveable:
+        r = float(np.linalg.norm(pos[lid] - node_pos[lid]))
+        orbit_radius[lid] = max(r, 1e-3)   # never zero
 
-    n = len(states)
-    centroid = (outer_polygon.centroid.x, outer_polygon.centroid.y)
+    # Angular velocity (signed scalar, radians/step)
+    ang_vel: Dict[int, float] = {lid: 0.0 for lid in moveable}
+
+    # Fixed obstacle centres (inner label_candidates + static overflow labels)
+    all_fixed_centers: List[np.ndarray] = _fixed_label_centers(label_candidates)
+    for lid, ol in overflow_labels.items():
+        if lid not in outer_overflow_ids:
+            cx, cy = _label_center(ol)
+            all_fixed_centers.append(np.array([cx, cy], dtype=float))
+
+    # Anchor-offset lookup (for binder validation)
+    _ANCHOR_OFFSETS = {
+        "top_left":     ( -1,  1), "top_right":    ( 1,  1),
+        "bottom_left":  ( -1, -1), "bottom_right": ( 1, -1),
+        "top":          (  0,  1), "bottom":        (  0, -1),
+        "left":         ( -1,  0), "right":         (  1,  0),
+        "center":       (  0,  0),
+    }
+
+    moveable_ids = list(moveable.keys())
 
     # ── simulation loop ───────────────────────────────────────────────────────
-    for iteration in range(max_iters):
-        max_disp = 0.0
+    for step in range(steps):
+        # Accumulate signed tangential torque for each moveable label
+        torque: Dict[int, float] = {lid: 0.0 for lid in moveable_ids}
 
-        # Compute all forces before moving anything (synchronous update)
-        forces = []
-        for i in range(n):
-            frx, fry = _force_rep_label(i, states)
-            fax, fay = _force_att_label(i, states)
-            fbx, fby = _force_rep_binders(i, states)
-            fasx, fasy = _force_angular_spread(i, states, centroid)
-            fcx, fcy = _force_anti_crossing(i, states)
-
-            fx = frx + fax + fbx + fasx + fcx
-            fy = fry + fay + fby + fasy + fcy
-            forces.append((fx, fy))
-
-        # Integrate and validate
-        for i, si in enumerate(states):
-            fx, fy = forces[i]
-
-            # Damped velocity integration
-            si['vx'] = DAMPING * si['vx'] + fx * dt
-            si['vy'] = DAMPING * si['vy'] + fy * dt
-
-            # Clamp step size
-            step = math.hypot(si['vx'], si['vy'])
-            if step > MAX_STEP_SIZE:
-                si['vx'] *= MAX_STEP_SIZE / step
-                si['vy'] *= MAX_STEP_SIZE / step
-
-            new_cx = si['cx'] + si['vx']
-            new_cy = si['cy'] + si['vy']
-
-            # Reject if the new position is invalid
-            if _position_valid(
-                new_cx, new_cy, si['hw'], si['hh'],
-                si['node_pos'], si['own_node_id'], si['node_id'],
-                outer_polygon, placed_union, G,
-                ol_map, label_candidates, si['ol'],
-            ):
-                disp = math.hypot(new_cx - si['cx'], new_cy - si['cy'])
-                max_disp = max(max_disp, disp)
-                si['cx'], si['cy'] = new_cx, new_cy
-            else:
-                # Kill velocity so the label doesn't keep trying the same move
-                si['vx'] = si['vy'] = 0.0
-
-        if verbose:
-            crossings_total = sum(
-                1
-                for ii in range(n)
-                for jj in range(ii + 1, n)
-                if _segments_cross(
-                    states[ii]['cx'], states[ii]['cy'],
-                    *states[ii]['node_pos'],
-                    states[jj]['cx'], states[jj]['cy'],
-                    *states[jj]['node_pos'],
+        # 1. Tangential repulsion: moveable ↔ moveable
+        for i, lid_a in enumerate(moveable_ids):
+            for lid_b in moveable_ids[i + 1:]:
+                t_a = _tangential_repulsion(
+                    pos[lid_a], node_pos[lid_a], pos[lid_b],
+                    repulsion_strength, repulsion_min_dist,
                 )
+                # Reaction on B: repulsion from A, projected on B's tangent
+                t_b = _tangential_repulsion(
+                    pos[lid_b], node_pos[lid_b], pos[lid_a],
+                    repulsion_strength, repulsion_min_dist,
+                )
+                torque[lid_a] += t_a
+                torque[lid_b] += t_b
+
+        # 2. Tangential repulsion: moveable ← fixed obstacles
+        for lid in moveable_ids:
+            for fc in all_fixed_centers:
+                torque[lid] += _tangential_repulsion(
+                    pos[lid], node_pos[lid], fc,
+                    repulsion_strength, repulsion_min_dist,
+                )
+
+        # 3. Boundary cushion (tangential nudge near polygon edges)
+        for lid in moveable_ids:
+            torque[lid] += _boundary_tangential_cushion(
+                pos[lid], node_pos[lid], outer_polygon,
+                cushion_radius, cushion_strength,
             )
-            print(f"[Forces] iter={iteration+1:3d}  max_disp={max_disp:.4f}  "
-                  f"crossings={crossings_total}")
 
-        if max_disp < CONVERGENCE_DELTA:
-            if verbose:
-                print(f"[Forces] converged after {iteration+1} iterations.")
+        # 4. Integrate angular velocity → new angle → new Cartesian position
+        max_ang_disp = 0.0
+        new_pos: Dict[int, np.ndarray] = {}
+
+        for lid in moveable_ids:
+            ol = moveable[lid]
+            effective_torque = torque[lid] / orbit_radius[lid]
+
+            ang_vel[lid] = (ang_vel[lid] + effective_torque * dt) * damp
+            dtheta        = ang_vel[lid] * dt
+            max_ang_disp  = max(max_ang_disp, abs(dtheta))
+
+            # Current angle of label around its node
+            r_vec = pos[lid] - node_pos[lid]
+            theta = math.atan2(float(r_vec[1]), float(r_vec[0]))
+
+            # Proposed new angle
+            theta_new = theta + dtheta
+
+            # Radial corrector: restore to original orbit radius
+            current_r = float(np.linalg.norm(r_vec))
+            target_r  = orbit_radius[lid]
+            r_new     = current_r + radial_k * (target_r - current_r)
+            r_new     = max(r_new, 1e-3)
+
+            candidate = node_pos[lid] + r_new * np.array([
+                math.cos(theta_new), math.sin(theta_new)
+            ])
+
+            node_outward = node_pos[lid] - np.array([outer_polygon.centroid.x, outer_polygon.centroid.y])
+            label_outward = candidate - node_pos[lid]
+            is_pointing_out = np.dot(node_outward, label_outward) > 0
+
+            # ── binder validity guard ─────────────────────────────────────────
+            tw, th = _label_wh(ol)
+            anchor_name = getattr(ol, "anchor", "center")
+            sx, sy = _ANCHOR_OFFSETS.get(anchor_name, (0, 0))
+            anchor_pt = candidate + np.array([sx * tw / 2, sy * th / 2])
+            binder_line = LineString([anchor_pt.tolist(), node_pos[lid].tolist()])
+
+            binder_ok = is_pointing_out and binding_line_valid(
+                binder_line,
+                ol.node_id, lid,
+                G, [],
+                overflow_labels, label_candidates,
+                soft=True,
+            )
+
+            if binder_ok:
+                new_pos[lid] = candidate
+            else:
+                new_pos[lid] = pos[lid]
+                ang_vel[lid] = 0.0
+
+        pos = new_pos
+
+        # 5. Early convergence check
+        if max_ang_disp < convergence_eps:
+            print(f"[refine_overflow_forces] converged after {step + 1} steps "
+                  f"(max_dθ={max_ang_disp:.5f} rad)")
             break
+    else:
+        print(f"[refine_overflow_forces] reached max steps ({steps})")
 
-    # ── write results back ────────────────────────────────────────────────────
-    result_map: Dict[int, OverflowLabel] = {}
-    for si in states:
-        nid = si['node_id']
-        ol  = si['ol']
-        update_overflow_label_position(ol, si['cx'], si['cy'], si['anchor_name'])
-        result_map[nid] = ol
+    # ── apply final positions ─────────────────────────────────────────────────
+    result: Dict[int, OverflowLabel] = dict(overflow_labels)
+    for lid, ol in moveable.items():
+        cx, cy = float(pos[lid][0]), float(pos[lid][1])
+        anchor_name = getattr(ol, "anchor", "center")
+        update_overflow_label_position(ol, cx, cy, anchor_name)
+        result[lid] = ol
 
-        if verbose:
-            orig_cx, orig_cy = overflow_candidates[nid].center
-            delta = math.hypot(si['cx'] - orig_cx, si['cy'] - orig_cy)
-            print(f"  label={nid}  Δ={delta:.3f}  "
-                  f"final=({si['cx']:.2f}, {si['cy']:.2f})")
-
-    return result_map
+    return result
