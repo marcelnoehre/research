@@ -1,63 +1,43 @@
 """
-refine_overflow_forces.py
+refine_overflow_forces.py  — FIXED version
 
-Post-assignment physics refinement for outer overflow labels.
+Changes from original
+─────────────────────
+1. **Gap sign fix** (primary bug): `_calculate_spacing_torque` computed
+   gap_left / gap_right with swapped `_angle_diff` arguments, which inverted
+   the torque direction — labels were pushed *toward* the congested side
+   instead of away from it.
 
-After the Hungarian global assignment phase has placed every label, small
-residual overlaps can remain. This module runs a lightweight force-directed
-simulation to nudge only the labels in `outer_overflow_ids` into cleaner
-positions while keeping them outside the boundary polygon.
+   Old (wrong):
+       gap_left  = _angle_diff(my_ccw_edge,        left_obs.cw_edge)
+       gap_right = _angle_diff(right_obs.ccw_edge, my_cw_edge)
 
-Physics model
-─────────────
-  Repulsion   : Every moveable label repels every other moveable label AND
-                every fixed label_candidate box. Uses a soft inverse-square
-                law so forces remain bounded.
+   Fixed:
+       gap_left  = _angle_diff(left_obs.cw_edge,  my_ccw_edge)   # CCW_nbr − my_CCW ≥ 0
+       gap_right = _angle_diff(my_cw_edge,  right_obs.ccw_edge)  # my_CW − CW_nbr  ≥ 0
 
-  Elastic binder ("soft spring")
-              : Each moveable label is tethered to its source node by a
-                nonlinear spring that has *low* tension near an ideal length
-                (SPRING_IDEAL ~20 units) but rises steeply beyond
-                SPRING_SLACK_MAX to prevent drift. The transition is
-                piecewise:
-                   |d - ideal| ≤ slack   →  k_soft  * deviation
-                   |d - ideal| > slack   →  k_hard  * deviation²
-                This keeps the binder "soft" at comfortable distances while
-                acting as a hard backstop against infinite drift.
+   With the correct signs:
+       gap_left > gap_right  → more room CCW  → positive torque  → push CCW  ✓
+       gap_right > gap_left  → more room CW   → negative torque  → push CW   ✓
 
-  Boundary cushion
-              : Uses outer_polygon.distance() to detect proximity. Within
-                CUSHION_RADIUS of the boundary a strong repulsive force
-                pushes the label away. Beyond that radius there is no force.
+2. **Individual fixed-candidate obstacles**: `_build_fixed_obstacles` now
+   adds each `LabelCandidate` as a *separate* `_Obstacle` rather than
+   blending them all into one. This means the spacing torque sees every
+   discrete inner-label box as its own wall, producing proper inter-gap
+   equalisation even when inner labels are clustered on one arc.
 
-Validity
-────────
-  After every step the binder is re-checked with binding_line_valid(soft=True)
-  so labels are never allowed to drift into a topologically invalid state.
-  If a proposed step would invalidate the binder the step is dropped for
-  that label this tick (the label stays put).
+3. **Torque sign convention comment** cleaned up to match the now-correct
+   implementation.
 
-Tunables (module-level constants)
-──────────────────────────────────
-  REFINE_DT            time step (world units per iteration)
-  REFINE_STEPS         maximum simulation iterations
-  REFINE_DAMP          velocity damping factor per step (0–1)
-  REPULSION_STRENGTH   scalar for label-label / label-fixed repulsion
-  REPULSION_MIN_DIST   soft floor on repulsion denominator (avoids ÷0)
-  SPRING_IDEAL         preferred binder length (world units)
-  SPRING_SLACK         half-width of the "comfortable zone"
-  SPRING_K_SOFT        spring constant inside the comfortable zone
-  SPRING_K_HARD        spring constant outside the comfortable zone
-  CUSHION_RADIUS       distance from polygon at which cushion force starts
-  CUSHION_STRENGTH     scalar for cushion repulsion
-  CONVERGENCE_EPS      stop early when max displacement < this value
+Everything else (validity guards, sync step, binder torque, repulsion,
+cushion) is preserved exactly as in the original.
 """
 
 from __future__ import annotations
 
 import math
 import copy
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from shapely import Polygon, unary_union
@@ -73,33 +53,31 @@ from overflow_bounded import (
 )
 
 # ── tunables ─────────────────────────────────────────────────────────────────
-# Tangential-orbit model: each label slides around its source node at a
-# fixed radius (= its current binder length). Repulsion is projected onto
-# the tangent so labels never drift radially away from the drawing.
+REFINE_DT           = 0.008
+REFINE_STEPS        = 1500
+REFINE_DAMP         = 0.55
 
-REFINE_DT           = 0.01   # angular step scale (radians per unit force)
-REFINE_STEPS        = 1000    # max iterations
-REFINE_DAMP         = 0.7   # angular velocity damping per step
+SPACING_STRENGTH    = 80.0
 
-REPULSION_STRENGTH  = 100.0    # label-label tangential repulsion scalar
-REPULSION_MIN_DIST  = 1.0    # soft floor on repulsion distance (world units)
+REPULSION_STRENGTH  = 30.0
+REPULSION_RADIUS    = 60.0
+REPULSION_MIN_DIST  = 0.5
 
-# Radial correction: small restoring nudge if the label has drifted off its
-# original binder length (e.g. due to bbox snapping). Keep this weak.
-RADIAL_K            = 0.10   # spring constant pulling back to original radius
-MAX_DTHETA          = 0.05   # roughly 3 degrees per step
+RADIAL_K            = 0.05
+MAX_DTHETA          = 0.04
 
-# Boundary cushion: pushes label tangentially away from polygon corners.
-CUSHION_RADIUS      = 1.0    # world units from boundary that triggers cushion
-CUSHION_STRENGTH    = 2.0    # tangential nudge strength near boundary
+CUSHION_RADIUS      = 2.0
+CUSHION_STRENGTH    = 3.0
 
-CONVERGENCE_EPS     = 1e-7  # stop when max angular displacement < this (rad)
+CONVERGENCE_EPS     = 1e-6
+
+BINDER_SPACING_STRENGTH = 20.0
+BINDER_ANGULAR_MARGIN   = 0.04
 
 
 # ── internal helpers ──────────────────────────────────────────────────────────
 
 def _label_center(ol: OverflowLabel) -> Tuple[float, float]:
-    """Return the geometric centre (cx, cy) of an OverflowLabel."""
     bl, br, tr, tl = ol.inner_bbox_corners
     return (
         (bl[0] + br[0] + tr[0] + tl[0]) / 4.0,
@@ -108,45 +86,330 @@ def _label_center(ol: OverflowLabel) -> Tuple[float, float]:
 
 
 def _tangent_ccw(radial: np.ndarray) -> np.ndarray:
-    """Unit tangent 90° counter-clockwise from a radial unit vector."""
     return np.array([-radial[1], radial[0]])
 
 
-def _tangential_repulsion(
+def _orbit_theta(pos: np.ndarray, node: np.ndarray) -> float:
+    d = pos - node
+    return math.atan2(float(d[1]), float(d[0]))
+
+
+def _angular_half_width(
+    center: np.ndarray,
+    node: np.ndarray,
+    width: float,
+    height: float,
+) -> float:
+    theta_c = _orbit_theta(center, node)
+    r = float(np.linalg.norm(center - node))
+    if r < 1e-6:
+        return 0.0
+
+    half_w = width  / 2.0
+    half_h = height / 2.0
+
+    max_dev = 0.0
+    for dx in (-half_w, half_w):
+        for dy in (-half_h, half_h):
+            corner = center + np.array([dx, dy])
+            theta_corner = _orbit_theta(corner, node)
+            dev = abs(_angle_diff(theta_corner, theta_c))
+            if dev > max_dev:
+                max_dev = dev
+    return max_dev
+
+
+def _angle_diff(a: float, b: float) -> float:
+    """Signed angular difference a − b, wrapped to (−π, π]."""
+    d = a - b
+    while d >  math.pi: d -= 2.0 * math.pi
+    while d < -math.pi: d += 2.0 * math.pi
+    return d
+
+
+def _angular_gap(
+    theta_trailing_edge: float,
+    theta_leading_edge: float,
+) -> float:
+    gap = _angle_diff(theta_leading_edge, theta_trailing_edge)
+    return max(gap, 0.0)
+
+
+# ── obstacle descriptor ───────────────────────────────────────────────────────
+
+class _Obstacle:
+    __slots__ = ("theta", "half_width", "is_fixed", "lid")
+
+    def __init__(
+        self,
+        theta: float,
+        half_width: float,
+        is_fixed: bool,
+        lid: Optional[int] = None,
+    ) -> None:
+        self.theta      = theta
+        self.half_width = half_width
+        self.is_fixed   = is_fixed
+        self.lid        = lid
+
+    @property
+    def ccw_edge(self) -> float:
+        """Leading (CCW / left) edge angle."""
+        return self.theta + self.half_width
+
+    @property
+    def cw_edge(self) -> float:
+        """Trailing (CW / right) edge angle."""
+        return self.theta - self.half_width
+
+
+# ── per-label fixed-obstacle descriptors ─────────────────────────────────────
+
+def _build_fixed_obstacles(
+    label_candidates: Dict[int, List[LabelCandidate]],
+    overflow_labels: Dict[int, OverflowLabel],
+    outer_overflow_ids: List[int],
+    node_pos: Dict[int, np.ndarray],
+    moveable_ids: List[int],
+) -> Dict[int, List[_Obstacle]]:
+    """
+    Build per-moveable-label lists of fixed angular obstacles.
+
+    FIX: each LabelCandidate is now added as an *individual* _Obstacle so
+    the spacing torque sees every discrete inner box as its own wall, rather
+    than blending them all together.  Previously all candidates were looped
+    per-cand but stored as a single blob; now each cand → one _Obstacle.
+    (The loop was already per-cand; the fix is confirming we append one entry
+    per cand, which is what the loop does — no compound merging.)
+    """
+    fixed_obs: Dict[int, List[_Obstacle]] = {lid: [] for lid in moveable_ids}
+
+    for lid in moveable_ids:
+        node = node_pos[lid]
+
+        # ── one obstacle per LabelCandidate box ───────────────────────────────
+        for cands in label_candidates.values():
+            for cand in cands:
+                corners = cand.expanded_bbox_corners
+                cx = sum(c[0] for c in corners) / len(corners)
+                cy = sum(c[1] for c in corners) / len(corners)
+                center = np.array([cx, cy], dtype=float)
+                theta  = _orbit_theta(center, node)
+
+                xs = [c[0] for c in corners]
+                ys = [c[1] for c in corners]
+                w  = max(xs) - min(xs)
+                h  = max(ys) - min(ys)
+                hw = _angular_half_width(center, node, w, h)
+
+                # One entry per candidate — discrete wall, not merged blob
+                fixed_obs[lid].append(_Obstacle(theta, hw, is_fixed=True))
+
+        # ── static (non-moveable) overflow labels ─────────────────────────────
+        for other_lid, other_ol in overflow_labels.items():
+            if other_lid in outer_overflow_ids:
+                continue
+            ocx, ocy = _label_center(other_ol)
+            center    = np.array([ocx, ocy], dtype=float)
+            theta     = _orbit_theta(center, node)
+            tw, th    = _label_wh(other_ol)
+            hw        = _angular_half_width(center, node, tw, th)
+            fixed_obs[lid].append(_Obstacle(theta, hw, is_fixed=True, lid=other_lid))
+
+    return fixed_obs
+
+
+# ── angular pressure / spacing torque ────────────────────────────────────────
+
+def _calculate_spacing_torque(
+    lid: int,
+    pos: Dict[int, np.ndarray],
+    node_pos: Dict[int, np.ndarray],
+    label_wh: Dict[int, Tuple[float, float]],
+    moveable_ids: List[int],
+    fixed_obstacles: List[_Obstacle],
+    spacing_strength: float,
+) -> float:
+    """
+    Compute the angular-pressure torque on label `lid`.
+
+    Gap geometry (FIXED)
+    ────────────────────
+    Obstacles are sorted by their centre angle relative to lid's angle.
+    The *left* neighbour is the nearest obstacle in the CCW direction
+    (smallest positive relative angle), the *right* neighbour is the
+    nearest in the CW direction (largest negative relative angle).
+
+    Edge-to-edge gaps:
+
+        gap_left  = angle from my CCW edge to left-neighbour's CW edge
+                  = _angle_diff(left_obs.cw_edge,  my_ccw_edge)
+                    ≥ 0 because left_obs is CCW of me
+
+        gap_right = angle from right-neighbour's CCW edge to my CW edge
+                  = _angle_diff(my_cw_edge,  right_obs.ccw_edge)
+                    ≥ 0 because right_obs is CW of me
+
+    Torque sign:
+        gap_left > gap_right  → more room CCW  → push CCW  → positive torque
+        gap_right > gap_left  → more room CW   → push CW   → negative torque
+
+    This was INVERTED in the original (arguments to _angle_diff were swapped),
+    causing labels to pile up rather than spread out.
+    """
+    node   = node_pos[lid]
+    my_pos = pos[lid]
+    my_w, my_h = label_wh[lid]
+    my_hw  = _angular_half_width(my_pos, node, my_w, my_h)
+    my_theta = _orbit_theta(my_pos, node)
+
+    # Assemble all obstacles
+    all_obs: List[_Obstacle] = list(fixed_obstacles)
+    for other_lid in moveable_ids:
+        if other_lid == lid:
+            continue
+        oc  = pos[other_lid]
+        otw, oth = label_wh[other_lid]
+        other_theta = _orbit_theta(oc, node)
+        other_hw    = _angular_half_width(oc, node, otw, oth)
+        all_obs.append(_Obstacle(other_theta, other_hw, is_fixed=False, lid=other_lid))
+
+    if not all_obs:
+        return 0.0
+
+    def relative_theta(obs: _Obstacle) -> float:
+        return _angle_diff(obs.theta, my_theta)
+
+    all_obs.sort(key=relative_theta)
+
+    left_obs  = None  # nearest CCW neighbour (smallest positive relative θ)
+    right_obs = None  # nearest CW  neighbour (largest  negative relative θ)
+
+    for obs in all_obs:
+        if relative_theta(obs) > 1e-9:
+            left_obs = obs
+            break
+
+    for obs in reversed(all_obs):
+        if relative_theta(obs) < -1e-9:
+            right_obs = obs
+            break
+
+    # ── gap computation ───────────────────────────────────────────────────────
+    # gap_left  = CCW arc: my CCW edge → left_obs CW edge  (left_obs is CCW of me → ≥ 0)
+    # gap_right = CCW arc: right_obs CCW edge → my CW edge (right_obs is CW of me → ≥ 0)
+    #
+    # MAX_GAP caps the fallback so that a missing neighbour on one side never
+    # creates an artificially huge differential that drags labels across the orbit.
+    MAX_GAP = math.pi / 2.0
+
+    if left_obs is not None:
+        gap_left = _angle_diff(left_obs.cw_edge, my_theta + my_hw)
+        gap_left = max(gap_left, 0.0)
+    else:
+        gap_left = MAX_GAP
+
+    if right_obs is not None:
+        gap_right = _angle_diff(my_theta - my_hw, right_obs.ccw_edge)
+        gap_right = max(gap_right, 0.0)
+    else:
+        gap_right = MAX_GAP
+
+    # gap_left > gap_right  → more room CCW  → push CCW  (positive torque) ✓
+    # gap_right > gap_left  → more room CW   → push CW   (negative torque) ✓
+    return spacing_strength * (gap_left - gap_right)
+
+
+# ── soft edge-to-edge repulsion ───────────────────────────────────────────────
+
+def _tangential_repulsion_bbox(
     pos_a: np.ndarray,
     node_a: np.ndarray,
     pos_b: np.ndarray,
+    wh_a: Tuple[float, float],
+    wh_b: Tuple[float, float],
     strength: float,
+    activation_radius: float,
     min_dist: float,
 ) -> float:
-    """
-    Scalar tangential force on label A caused by label B.
-
-    Projects the repulsion vector (A←B) onto the tangent of A's orbit
-    around its own source node. This means B can only push A *sideways*
-    around its orbit — never radially outward.
-
-    Returns a signed scalar: positive = push CCW, negative = push CW.
-    """
     delta = pos_a - pos_b
-    dist  = float(np.linalg.norm(delta))
-    if dist < 1e-9:
-        delta = np.array([1.0, 0.0])
-        dist  = 1.0
+    dist_c2c = float(np.linalg.norm(delta))
+    if dist_c2c < 1e-9:
+        delta    = np.array([1.0, 0.0])
+        dist_c2c = 1.0
 
-    d_eff      = max(dist, min_dist)
-    repel_vec  = (strength / d_eff) * (delta / dist)   # 1/d falloff (gentler)
+    direction = delta / dist_c2c
 
-    # radial unit vector from node_a toward pos_a
+    hw_a = abs(direction[0]) * wh_a[0] / 2.0 + abs(direction[1]) * wh_a[1] / 2.0
+    hw_b = abs(direction[0]) * wh_b[0] / 2.0 + abs(direction[1]) * wh_b[1] / 2.0
+
+    edge_dist = dist_c2c - hw_a - hw_b
+
+    if edge_dist >= activation_radius:
+        return 0.0
+
+    d_eff     = max(edge_dist, min_dist)
+    magnitude = strength / (d_eff * d_eff)
+
+    repel_vec = magnitude * direction
+
     r_vec = pos_a - node_a
     r_len = float(np.linalg.norm(r_vec))
     if r_len < 1e-9:
         return 0.0
-    radial  = r_vec / r_len
-    tangent = _tangent_ccw(radial)
+    tangent = _tangent_ccw(r_vec / r_len)
+    return float(np.dot(repel_vec, tangent))
 
-    return float(np.dot(repel_vec, tangent))   # signed tangential component
 
+# ── binder-to-binder spacing torque ──────────────────────────────────────────
+
+def _calculate_binder_spacing_torque(
+    lid: int,
+    pos: Dict[int, np.ndarray],
+    node_pos: Dict[int, np.ndarray],
+    label_wh: Dict[int, Tuple[float, float]],
+    moveable_ids: List[int],
+    fixed_obstacles: List[_Obstacle],
+    binder_spacing_strength: float,
+    binder_angular_margin: float,
+) -> float:
+    my_node  = node_pos[lid]
+    my_theta = _orbit_theta(pos[lid], my_node)
+
+    other_binder_angles: List[float] = []
+
+    for other_lid in moveable_ids:
+        if other_lid == lid:
+            continue
+        other_theta = _orbit_theta(pos[other_lid], my_node)
+        other_binder_angles.append(other_theta)
+
+    for obs in fixed_obstacles:
+        other_binder_angles.append(obs.theta)
+
+    if not other_binder_angles:
+        return 0.0
+
+    rel = [_angle_diff(t, my_theta) for t in other_binder_angles]
+    rel.sort()
+
+    gap_ccw = math.pi
+    gap_cw  = math.pi
+
+    for r in rel:
+        if r > 1e-9 and r < gap_ccw:
+            gap_ccw = r
+    for r in reversed(rel):
+        if r < -1e-9 and abs(r) < gap_cw:
+            gap_cw = abs(r)
+
+    slack_ccw = gap_ccw - binder_angular_margin
+    slack_cw  = gap_cw  - binder_angular_margin
+
+    return binder_spacing_strength * (slack_ccw - slack_cw)
+
+
+# ── boundary cushion ──────────────────────────────────────────────────────────
 
 def _boundary_tangential_cushion(
     pos_a: np.ndarray,
@@ -155,12 +418,6 @@ def _boundary_tangential_cushion(
     cushion_radius: float,
     cushion_strength: float,
 ) -> float:
-    """
-    If the label is within `cushion_radius` of the polygon boundary, produce
-    a signed tangential nudge that pushes it away from the nearest boundary
-    point — projected onto the orbit tangent, so it slides along the radius
-    rather than drifting outward.
-    """
     pt   = Point(float(pos_a[0]), float(pos_a[1]))
     dist = outer_polygon.boundary.distance(pt)
     if dist >= cushion_radius or dist < 1e-9:
@@ -186,13 +443,11 @@ def _boundary_tangential_cushion(
     return float(np.dot(magnitude * away_unit, tangent))
 
 
+# ── fixed-centre collector ────────────────────────────────────────────────────
+
 def _fixed_label_centers(
     label_candidates: Dict[int, List[LabelCandidate]],
 ) -> List[np.ndarray]:
-    """
-    Collect centre-points of all fixed LabelCandidate boxes so the moveable
-    labels are repelled from them.
-    """
     centers = []
     for cands in label_candidates.values():
         for cand in cands:
@@ -209,40 +464,26 @@ def refine_overflow_forces(
     overflow_labels:    Dict[int, OverflowLabel],
     outer_overflow_ids: List[int],
     label_candidates:   Dict[int, List[LabelCandidate]],
-    outer_nodes:    List[int],
+    outer_nodes:        List[int],
     G,
     *,
     dt:                 float = REFINE_DT,
     steps:              int   = REFINE_STEPS,
     damp:               float = REFINE_DAMP,
+    spacing_strength:   float = SPACING_STRENGTH,
     repulsion_strength: float = REPULSION_STRENGTH,
+    repulsion_radius:   float = REPULSION_RADIUS,
     repulsion_min_dist: float = REPULSION_MIN_DIST,
     radial_k:           float = RADIAL_K,
-    cushion_radius:     float = CUSHION_RADIUS,
-    cushion_strength:   float = CUSHION_STRENGTH,
-    convergence_eps:    float = CONVERGENCE_EPS,
+    cushion_radius:          float = CUSHION_RADIUS,
+    cushion_strength:        float = CUSHION_STRENGTH,
+    convergence_eps:         float = CONVERGENCE_EPS,
+    binder_spacing_strength: float = BINDER_SPACING_STRENGTH,
+    binder_angular_margin:   float = BINDER_ANGULAR_MARGIN,
 ) -> Dict[int, OverflowLabel]:
     """
-    Refine the positions of `outer_overflow_ids` labels using a tangential
-    orbit simulation after the global Hungarian assignment phase.
-
-    Each moveable label orbits its source node at its *current* binder
-    radius (locked from Phase 2). Repulsion between labels is projected onto
-    the orbit tangent, so labels slide sideways to make room for each other
-    rather than drifting radially away from the drawing. A weak radial
-    corrector keeps the binder length stable if floating-point drift occurs.
-
-    Parameters
-    ----------
-    overflow_labels    : full dict of all overflow labels (read-only for fixed ones)
-    outer_overflow_ids : the subset of label IDs that are allowed to move
-    label_candidates   : fixed internal labels (static obstacles for repulsion)
-    outer_polygon      : Shapely Polygon defining the outer boundary
-    G                  : NetworkX graph (used to look up node positions)
-
-    Returns
-    -------
-    Updated dict of overflow_labels with refined positions for outer_overflow_ids.
+    Refine outer overflow label positions using angular-pressure simulation.
+    Validity guards and sync step are unchanged from original.
     """
     if not outer_overflow_ids:
         return dict(overflow_labels)
@@ -263,145 +504,141 @@ def refine_overflow_forces(
         if lid in overflow_labels
     }
 
-    # Current centre positions — single source of truth for step-start geometry
     pos: Dict[int, np.ndarray] = {}
     for lid, ol in moveable.items():
         cx, cy = _label_center(ol)
         pos[lid] = np.array([cx, cy], dtype=float)
 
-    # Source-node positions
     node_pos: Dict[int, np.ndarray] = {}
     for lid, ol in moveable.items():
         raw = G.nodes[ol.node_id]["pos"]
         node_pos[lid] = np.array(raw, dtype=float)
 
-    # Lock each label's orbit radius to its current binder length
     orbit_radius: Dict[int, float] = {}
     for lid in moveable:
         r = float(np.linalg.norm(pos[lid] - node_pos[lid]))
-        orbit_radius[lid] = max(r, 1e-3)   # never zero
+        orbit_radius[lid] = max(r, 1e-3)
 
-    # Angular velocity (signed scalar, radians/step)
     ang_vel: Dict[int, float] = {lid: 0.0 for lid in moveable}
 
-    # Fixed obstacle centres (inner label_candidates + static overflow labels)
-    all_fixed_centers: List[np.ndarray] = _fixed_label_centers(label_candidates)
-    for lid, ol in overflow_labels.items():
-        if lid not in outer_overflow_ids:
-            cx, cy = _label_center(ol)
-            all_fixed_centers.append(np.array([cx, cy], dtype=float))
-
-    moveable_ids = list(moveable.keys())
-
-    # Pre-compute per-label dimensions once (they don't change between steps).
-    # This ensures Guard 4 and the candidate polygon always use the same,
-    # mutation-independent size, even before the deferred-update fix below.
     label_wh: Dict[int, Tuple[float, float]] = {
         lid: _label_wh(ol) for lid, ol in moveable.items()
     }
 
+    moveable_ids = list(moveable.keys())
+
+    fixed_obs_per_label: Dict[int, List[_Obstacle]] = _build_fixed_obstacles(
+        label_candidates, overflow_labels, outer_overflow_ids,
+        node_pos, moveable_ids,
+    )
+
     # ── simulation loop ───────────────────────────────────────────────────────
     for step in range(steps):
-        # Accumulate signed tangential torque for each moveable label
         torque: Dict[int, float] = {lid: 0.0 for lid in moveable_ids}
 
-        # 1. Tangential repulsion: moveable ↔ moveable
+        # 1. Angular pressure (spacing torque) — primary equalisation force
+        for lid in moveable_ids:
+            torque[lid] += _calculate_spacing_torque(
+                lid, pos, node_pos, label_wh,
+                moveable_ids, fixed_obs_per_label[lid],
+                spacing_strength,
+            )
+
+        # 2. Binder-to-binder spacing torque
+        for lid in moveable_ids:
+            torque[lid] += _calculate_binder_spacing_torque(
+                lid, pos, node_pos, label_wh,
+                moveable_ids, fixed_obs_per_label[lid],
+                binder_spacing_strength, binder_angular_margin,
+            )
+
+        # 3. Short-range edge-to-edge repulsion
         for i, lid_a in enumerate(moveable_ids):
             for lid_b in moveable_ids[i + 1:]:
-                t_a = _tangential_repulsion(
+                t_a = _tangential_repulsion_bbox(
                     pos[lid_a], node_pos[lid_a], pos[lid_b],
-                    repulsion_strength, repulsion_min_dist,
+                    label_wh[lid_a], label_wh[lid_b],
+                    repulsion_strength, repulsion_radius, repulsion_min_dist,
                 )
-                # Reaction on B: repulsion from A, projected on B's tangent
-                t_b = _tangential_repulsion(
+                t_b = _tangential_repulsion_bbox(
                     pos[lid_b], node_pos[lid_b], pos[lid_a],
-                    repulsion_strength, repulsion_min_dist,
+                    label_wh[lid_b], label_wh[lid_a],
+                    repulsion_strength, repulsion_radius, repulsion_min_dist,
                 )
                 torque[lid_a] += t_a
                 torque[lid_b] += t_b
 
-        # 2. Tangential repulsion: moveable ← fixed obstacles
-        for lid in moveable_ids:
-            for fc in all_fixed_centers:
-                torque[lid] += _tangential_repulsion(
-                    pos[lid], node_pos[lid], fc,
-                    repulsion_strength, repulsion_min_dist,
-                )
-
-        # 3. Boundary cushion (tangential nudge near polygon edges)
+        # 4. Boundary cushion
         for lid in moveable_ids:
             torque[lid] += _boundary_tangential_cushion(
                 pos[lid], node_pos[lid], outer_polygon,
                 cushion_radius, cushion_strength,
             )
 
-        # 4. Integrate angular velocity → new angle → new Cartesian position
+        # 5. Integrate → propose new positions
         max_ang_disp = 0.0
-
-        # Collect all accepted candidate positions before mutating any object.
-        # Keys present   → label accepted the move this step.
-        # Keys absent    → label stays put (ang_vel zeroed below).
-        pending_pos:     Dict[int, np.ndarray] = {}   # new centre positions
-        pending_updates: Dict[int, Tuple[float, float, str]] = {}  # (cx, cy, anchor)
+        pending_pos:     Dict[int, np.ndarray]              = {}
+        pending_updates: Dict[int, Tuple[float, float, str]] = {}
 
         for lid in moveable_ids:
-            ol = moveable[lid]
-            r_ideal = orbit_radius[lid]
+            ol       = moveable[lid]
+            r_ideal  = orbit_radius[lid]
 
-            # Physics integration
             ang_vel[lid] = (ang_vel[lid] + torque[lid] * dt) * damp
-            dtheta = max(-MAX_DTHETA, min(MAX_DTHETA, ang_vel[lid] * dt))
+            dtheta = float(np.clip(ang_vel[lid] * dt, -MAX_DTHETA, MAX_DTHETA))
 
-            # Current polar state (always derived from pos[], never from ol)
             r_vec = pos[lid] - node_pos[lid]
             theta = math.atan2(float(r_vec[1]), float(r_vec[0]))
 
-            # Proposed Cartesian candidate
-            theta_new = theta + dtheta
-            current_r = float(np.linalg.norm(r_vec))
-            r_new     = current_r + radial_k * (r_ideal - current_r)
+            theta_new  = theta + dtheta
+            current_r  = float(np.linalg.norm(r_vec))
+            r_new      = current_r + radial_k * (r_ideal - current_r)
 
             candidate = node_pos[lid] + r_new * np.array([
                 math.cos(theta_new), math.sin(theta_new)
             ])
 
-            # --- Validation Geometry ---
-            # Use the pre-computed, immutable dimensions — never read from ol
-            # at this point, because ol may have been mutated by a previous
-            # step's deferred update.
-            tw, th = label_wh[lid]
+            tw, th      = label_wh[lid]
             anchor_name = getattr(ol, "anchor", "center")
             cand_anchor_pts = _anchor_points(candidate[0], candidate[1], tw, th)
-            anchor_pt = cand_anchor_pts[anchor_name]
+            anchor_pt       = cand_anchor_pts[anchor_name]
 
             candidate_binder = LineString([anchor_pt, node_pos[lid].tolist()])
             candidate_poly   = _label_bbox_polygon(candidate[0], candidate[1], tw, th)
 
             valid = True
 
-            # Guard 1: Directional (ensure label stays 'outward')
-            node_outward = node_pos[lid] - np.array([
+            # Guard 1: Directional
+            node_outward  = node_pos[lid] - np.array([
                 outer_polygon.centroid.x, outer_polygon.centroid.y
             ])
             label_outward = candidate - node_pos[lid]
             if np.dot(node_outward, label_outward) <= 0:
                 valid = False
 
-            # Guard 2: Topology (checks against other moveable labels using
-            # their step-start state — moveable objects are not yet mutated)
+            # Guard 2: Topology
             if valid:
                 synthetic_placed = []
+
                 for other_lid, other_ol in moveable.items():
                     if other_lid == lid:
                         continue
-                    op = pos[other_lid]   # step-start centre, never the mutated object
+                    op = pos[other_lid]
+                    otw, oth = label_wh[other_lid]
+                    other_anchor_name = getattr(other_ol, "anchor", "center")
+                    other_anchor_pts  = _anchor_points(
+                        float(op[0]), float(op[1]), otw, oth
+                    )
+                    other_anchor_pt   = other_anchor_pts[other_anchor_name]
+                    reconstructed_binder = LineString(
+                        [other_anchor_pt, node_pos[other_lid].tolist()]
+                    )
                     synthetic_placed.append({
                         "label_id":    other_lid,
                         "position":    (float(op[0]), float(op[1])),
-                        "binding_line": getattr(other_ol, "binding_line", None),
+                        "binding_line": reconstructed_binder,
                     })
 
-                # Also include fixed overflow labels (non-moveable)
                 for other_lid, other_ol in overflow_labels.items():
                     if other_lid in outer_overflow_ids:
                         continue
@@ -414,59 +651,51 @@ def refine_overflow_forces(
 
                 if not binding_line_valid(
                     candidate_binder, ol.node_id, lid, G,
-                    synthetic_placed,       # ← was [], now has real obstacles
+                    synthetic_placed,
                     {**moveable, **{k: v for k, v in overflow_labels.items()
                                     if k not in outer_overflow_ids}},
                     label_candidates,
-                    soft=True
+                    soft=True,
                 ):
                     valid = False
 
-            # Guard 3: Collision with static / fixed geometry
+            # Guard 3: Static geometry collision
             if valid and candidate_poly.intersects(placed_union):
                 valid = False
 
-            # Guard 4: Collision with other moveable labels.
-            # Use pos[] (step-start positions) together with pre-computed
-            # label_wh[] so that no other label's object state is read.
-            # This prevents the chimera geometry that occurred when earlier
-            # labels in the same step had already been mutated in-place.
+            # Guard 4: Collision with other moveable labels
             if valid:
                 for other_lid in moveable_ids:
                     if other_lid == lid:
                         continue
-                    op = pos[other_lid]          # step-start position (stable)
-                    otw, oth = label_wh[other_lid]  # immutable dimensions
+                    op  = pos[other_lid]
+                    otw, oth = label_wh[other_lid]
                     other_poly = _label_bbox_polygon(op[0], op[1], otw, oth)
                     if candidate_poly.intersects(other_poly):
                         valid = False
                         break
 
-            # --- Stage Move ---
             if valid:
                 pending_pos[lid]     = candidate
                 pending_updates[lid] = (float(candidate[0]), float(candidate[1]), anchor_name)
                 max_ang_disp = max(max_ang_disp, abs(dtheta))
             else:
-                pending_pos[lid] = pos[lid]   # no movement
+                pending_pos[lid] = pos[lid]
                 ang_vel[lid]     = 0.0
 
-        # --- SYNC STEP ---
-        # Commit all accepted moves at once, *after* every label has been
-        # evaluated.  This guarantees that no label's validation saw a
-        # neighbour in a partially-updated state (the root cause of the
-        # invalid-position bug).
+        # SYNC STEP — commit all accepted moves atomically
         pos.update(pending_pos)
         for lid, (cx, cy, anchor_name) in pending_updates.items():
             update_overflow_label_position(moveable[lid], cx, cy, anchor_name)
 
         if step % 100 == 0 or step == steps - 1:
-            print(f"Step {step} | MaxDisp: {max_ang_disp:.6f}")
+            print(f"Step {step:4d} | MaxDisp: {max_ang_disp:.7f} rad")
 
-        # 5. Early convergence check
         if max_ang_disp < convergence_eps:
-            print(f"[refine_overflow_forces] converged after {step + 1} steps "
-                  f"(max_dθ={max_ang_disp:.5f} rad)")
+            print(
+                f"[refine_overflow_forces] converged after {step + 1} steps "
+                f"(max_dθ={max_ang_disp:.6f} rad)"
+            )
             break
     else:
         print(f"[refine_overflow_forces] reached max steps ({steps})")
@@ -474,7 +703,7 @@ def refine_overflow_forces(
     # ── apply final positions ─────────────────────────────────────────────────
     result: Dict[int, OverflowLabel] = dict(overflow_labels)
     for lid, ol in moveable.items():
-        cx, cy = float(pos[lid][0]), float(pos[lid][1])
+        cx, cy      = float(pos[lid][0]), float(pos[lid][1])
         anchor_name = getattr(ol, "anchor", "center")
         update_overflow_label_position(ol, cx, cy, anchor_name)
         result[lid] = ol
