@@ -10,7 +10,7 @@ W_INNER_PROXIMITY = 3.0   # Push away from internal drawing
 W_GLOBAL_PROXIMITY = 2.0  # Push away from other overflow labels (Tangential)
 W_SPRING = 1.5            # Pull toward node (Stronger to keep binders short)
 W_BINDER_DODGE = 2.0      # Push binder away from fixed labels
-ITERATIONS = 1000          
+ITERATIONS = 100
 STEP_SIZE = 0.1
 MIN_BINDER_LENGTH = 0.25      
 
@@ -214,6 +214,10 @@ def optimize_overflow_labels(
                         break
                     if proposed_poly_tight.intersects(other_binder):
                         # print(node_id, 'intersects another binder')
+                        valid = False
+                        break
+
+                    if Point(other_anchor_pt).distance(proposed_binder) < 0.1:
                         valid = False
                         break
 

@@ -43,6 +43,7 @@ WEDGE_RADIUS        = 1e4
 OUTER_CANDIDATE_POOL = 100   # top-K candidates kept per label after phase 1
 CANDIDATES_PER_RAY = 2
 RAYS = 180
+MAX_LABEL_DIST      = 2.0
 
 # cost weights
 W_ALIGN         = 1.0   # anchor alignment
@@ -113,11 +114,13 @@ def _generate_candidates(
 
     1. Build a regular grid that tiles the bounding box of outer_polygon
        expanded by one label-width on every side.
-    2. For each cell center, AABB-reject anything that overlaps the polygon,
-       placed labels, or another node.  Only surviving cells get Shapely work.
-    3. For each surviving cell pick the best anchor (vectorised dot-product),
+    2. Distance pre-filter: discard cells whose center is more than
+       MAX_LABEL_DIST units from the polygon exterior (pure numpy, no Shapely).
+    3. AABB-reject anything that overlaps the polygon or another node.
+       Only surviving cells get Shapely work.
+    4. For each surviving cell pick the best anchor (vectorised dot-product),
        validate the binder once, score, keep.
-    4. Sort by cost, return top-K.
+    5. Sort by cost, return top-K.
     """
 
     # ── pre-compute once ─────────────────────────────────────────────────────
@@ -160,6 +163,27 @@ def _generate_candidates(
     cx_all = gx.ravel()
     cy_all = gy.ravel()
 
+    # ── distance-from-boundary pre-filter ────────────────────────────────────
+    ext_coords = np.array(poly_ext.coords)          # (M+1, 2)
+    seg_a  = ext_coords[:-1]                        # (M, 2)
+    seg_b  = ext_coords[1:]                         # (M, 2)
+    seg_d  = seg_b - seg_a                          # (M, 2)
+    seg_l2 = (seg_d ** 2).sum(axis=1)              # (M,)  squared lengths
+
+    # Broadcast: pts (N,1,2), segments (1,M,2)
+    pts_3d = np.stack([cx_all, cy_all], axis=1)[:, None, :]  # (N, 1, 2)
+    sa_3d  = seg_a[None, :, :]                               # (1, M, 2)
+    sd_3d  = seg_d[None, :, :]                               # (1, M, 2)
+    sl2_3d = seg_l2[None, :]                                  # (1, M)
+
+    t       = ((pts_3d - sa_3d) * sd_3d).sum(axis=2) / np.where(sl2_3d > 0, sl2_3d, 1.0)
+    t       = np.clip(t, 0.0, 1.0)                           # (N, M)
+    closest = sa_3d + t[:, :, None] * sd_3d                  # (N, M, 2)
+    dist2   = ((pts_3d - closest) ** 2).sum(axis=2)          # (N, M)
+    min_dist = np.sqrt(dist2.min(axis=1))                     # (N,)
+
+    keep = min_dist <= MAX_LABEL_DIST
+
     # ── pass 1: bulk AABB filter (pure numpy, no Shapely) ────────────────────
     # Expanded bbox corners for every cell.
     ex0 = cx_all - hw;  ey0 = cy_all - hh
@@ -170,7 +194,6 @@ def _generate_candidates(
         (ex1 < poly_bounds[0]) | (ex0 > poly_bounds[2]) |
         (ey1 < poly_bounds[1]) | (ey0 > poly_bounds[3])
     )
-    keep = np.ones(len(cx_all), dtype=bool)
 
     # Node containment: reject cells whose expanded bbox contains another node
     if len(other_node_pos):
