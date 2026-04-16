@@ -2,17 +2,16 @@ import numpy as np
 import copy
 from shapely import unary_union
 from shapely.geometry import Polygon, Point, LineString
+from shapely.ops import nearest_points
 
-from overflow_bounded import _anchor_points, _label_wh, update_overflow_label_position
+from overflow_bounded import _anchor_points, _label_wh, _label_wh_expanded, binding_line_valid, update_overflow_label_position
 
-# --- Scaled Configuration for Small Coordinate Systems (~15x15 units) ---
-W_INNER_PROXIMITY = 2.5   # Push away from internal drawing
-W_GLOBAL_PROXIMITY = 2.5  # Push away from other overflow labels (Tangential)
-W_CLARITY = 1.0           # Push away from other anchors
-W_SPRING = 4.0            # Pull toward node (Stronger to keep binders short)
-W_BINDER_DODGE = 2.5      # Push binder away from fixed labels
-ITERATIONS = 200          
-STEP_SIZE = 0.1     
+W_INNER_PROXIMITY = 3.0   # Push away from internal drawing
+W_GLOBAL_PROXIMITY = 2.0  # Push away from other overflow labels (Tangential)
+W_SPRING = 1.5            # Pull toward node (Stronger to keep binders short)
+W_BINDER_DODGE = 2.0      # Push binder away from fixed labels
+ITERATIONS = 1000          
+STEP_SIZE = 0.1
 MIN_BINDER_LENGTH = 0.25      
 
 def optimize_overflow_labels(
@@ -26,168 +25,248 @@ def optimize_overflow_labels(
     Refines overflow label positions using force-directed optimization 
     calibrated for small-scale coordinate systems.
     """
-    # 1. Setup Static Geometry
+    #########################
+    # Setup Static Geometry #
+    #########################
     outer_polygon = Polygon([G.nodes[n]['pos'] for n in outer_nodes])
     drawing_centroid = np.array([outer_polygon.centroid.x, outer_polygon.centroid.y])
-    
-    # Static obstacles for the Label Box
+    # bboxes of label candidates 
     placed_polys = [
         Polygon(cand.bbox_corners)
         for cands in label_candidates.values()
         for cand in cands
     ]
     placed_union = unary_union(placed_polys + [outer_polygon])
-
-    # Static obstacles for the Binder Line (Fixed internal labels)
-    fixed_data = []
-    fixed_polys_for_line = []
-    for cands in label_candidates.values():
-        for cand in cands:
-            poly = Polygon(cand.inner_bbox_corners)
-            fixed_polys_for_line.append(poly)
-            fixed_data.append((poly, np.array(cand.center)))
-
-    # 2. Optimization Loop
-    for _ in range(ITERATIONS):
+    # ink of label candidates
+    ink_polys = [
+        Polygon(cand.inner_bbox_corners)
+        for cands in label_candidates.values()
+        for cand in cands
+    ]
+    #####################
+    # Optimization Loop #
+    #####################
+    for i in range(ITERATIONS):
         pending_updates = {}
+        unbounded_overflow_labels.sort(key=lambda ol: Point(overflow_candidates[ol].center).distance(placed_union))
+
 
         for node_id in unbounded_overflow_labels:
             ol = overflow_candidates[node_id]
             node_pos = np.array(G.nodes[node_id]['pos'])
             current_center = np.array(ol.center)
-            exp_bbox_poly = Polygon(ol.expanded_bbox_corners)
-            
-            # --- PHASE A: FORCE CALCULATION ---
+            bbox_poly = Polygon(ol.bbox_corners)
+            w, h  = _label_wh_expanded(ol)
             force_vector = np.array([0.0, 0.0])
 
-            # A1. Repulsion from Drawing Boundary
-            dist_to_boundary = outer_polygon.distance(exp_bbox_poly)
-            if dist_to_boundary < 3.0: # Scaled threshold
-                dir_away = current_center - drawing_centroid
-                mag = (1.0 / (dist_to_boundary + 0.2)) * W_INNER_PROXIMITY
-                force_vector += (dir_away / (np.linalg.norm(dir_away) + 1e-6)) * mag
+            ################################################
+            # Repulsion from label candidates (Box-to-Box) #
+            ################################################
+            threshold = max(w, h) * 0.5
 
-            # A2. Repulsion from Internal Fixed Labels (Box-to-Box)
-            for f_poly, f_center in fixed_data:
-                dist_to_fixed = f_poly.distance(exp_bbox_poly)
-                if dist_to_fixed < 5.0:
-                    dir_away = current_center - f_center
-                    mag = (1.0 / (dist_to_fixed + 0.2)) * W_INNER_PROXIMITY
-                    force_vector += (dir_away / (np.linalg.norm(dir_away) + 1e-6)) * mag
+            for ink in ink_polys:
+                p1, p2 = nearest_points(ink, bbox_poly)
+                diff = np.array([p2.x - p1.x, p2.y - p1.y])
+                dist_to_ink = np.linalg.norm(diff)
 
-            # A3. Tangential Repulsion: Between Overflow Labels
+                if dist_to_ink < threshold:
+                    mag = (threshold - dist_to_ink) * W_INNER_PROXIMITY
+                    force_vector += (diff / (dist_to_ink + 1e-6)) * mag
+
+            #####################
             # Pushes labels along the ring to open gaps
+            #####################
+            threshold = w * 1.2
+
             for other_id in unbounded_overflow_labels:
                 if node_id == other_id: continue
                 other_ol = overflow_candidates[other_id]
-                dist = Polygon(ol.bbox_corners).distance(Polygon(other_ol.bbox_corners))
-                
-                threshold = 8.0 # Approx 3 label widths
+                other_poly = Polygon(other_ol.bbox_corners)
+                p1, p2 = nearest_points(bbox_poly, other_poly)
+                dist = np.linalg.norm(np.array([p2.x - p1.x, p2.y - p1.y]))
                 if dist < threshold:
-                    other_center = np.array(other_ol.center)
+                    # radial line from center of the map to this label
                     radial_vec = current_center - drawing_centroid
                     radial_unit = radial_vec / (np.linalg.norm(radial_vec) + 1e-6)
+                    
+                    # tangent (perpendicular) vector for 'sliding' (rotating the radial vector 90 degrees)
                     tangent_vec = np.array([-radial_unit[1], radial_unit[0]])
                     
-                    vec_to_other = other_center - drawing_centroid
+                    # clockwise or counter-clockwise (slide to open the gap).
+                    vec_to_other = np.array(other_ol.center) - drawing_centroid
                     side = np.cross(radial_unit, vec_to_other / (np.linalg.norm(vec_to_other) + 1e-6))
                     slide_dir = tangent_vec if side < 0 else -tangent_vec
                     
                     mag = (threshold - dist) * W_GLOBAL_PROXIMITY
                     force_vector += slide_dir * mag
 
-            # A4. Spring Force (Pull to Node)
-            force_vector += (node_pos - current_center) * W_SPRING
+            #####################
+            # spring force pulling binder
+            #####################
+            # point on the drawing closest to the label
+            p1_draw, p2_label = nearest_points(outer_polygon, bbox_poly)
+            draw_edge_pt = np.array([p1_draw.x, p1_draw.y])
+            label_edge_pt = np.array([p2_label.x, p2_label.y])
 
-            # A5. Binder-to-Anchor Repulsion (Clarity)
+            # vector from drawing edge to label edge
+            gap_vec = label_edge_pt - draw_edge_pt
+            dist = np.linalg.norm(gap_vec) 
+
+            # 4. Apply the Spring Force based on the GAP, not the center
+            # If distance < target, it pushes away. If distance > target, it pulls in.
+            mag = (dist - MIN_BINDER_LENGTH) * W_SPRING
+            unit_dir = gap_vec / (dist + 1e-6)
+
+            force_vector -= unit_dir * mag
+
+            #####################
+            # Binder repulsion
+            #####################
             current_anchor_pt = _get_actual_anchor_pt(ol)
             binder_line = LineString([current_anchor_pt, node_pos])
-            for other_id in unbounded_overflow_labels:
-                if node_id == other_id: continue
-                other_anchor_pt = _get_actual_anchor_pt(overflow_candidates[other_id])
-                dist_to_anchor = binder_line.distance(Point(other_anchor_pt))
-                if dist_to_anchor < 1.0:
-                    dir_away = current_center - np.array(other_anchor_pt)
-                    mag = (1.0 / (dist_to_anchor + 0.2)) * W_CLARITY
-                    force_vector += (dir_away / (np.linalg.norm(dir_away) + 1e-6)) * mag
 
-            # A6. Binder-to-Box Repulsion (Dodging fixed labels)
-            for f_poly, f_center in fixed_data:
-                dist_binder_to_fixed = binder_line.distance(f_poly)
-                if dist_binder_to_fixed < 1.5:
-                    radial_vec = current_center - drawing_centroid
-                    radial_unit = radial_vec / (np.linalg.norm(radial_vec) + 1e-6)
-                    tangent_vec = np.array([-radial_unit[1], radial_unit[0]])
-                    
-                    vec_to_collision = f_center - drawing_centroid
-                    side = np.cross(radial_unit, vec_to_collision / (np.linalg.norm(vec_to_collision) + 1e-6))
-                    slide_direction = tangent_vec if side < 0 else -tangent_vec
-                    
-                    mag = (1.0 / (dist_binder_to_fixed + 0.1)) * W_BINDER_DODGE
-                    force_vector += slide_direction * mag
-
-            # Displacement
-            proposed_center = current_center + (force_vector * 0.01 * STEP_SIZE)
+            radial_vec = current_center - drawing_centroid
+            radial_unit = radial_vec / (np.linalg.norm(radial_vec) + 1e-6)
+            tangent_vec = np.array([-radial_unit[1], radial_unit[0]])
             
-            # --- PHASE B: ANCHOR SELECTION ---
+            binder_threshold = 0.2
+
+            def _apply_binder_repulsion(obstacle_poly, obstacle_center_pt):
+                nonlocal force_vector
+                dist_binder = binder_line.distance(obstacle_poly)
+                
+                if dist_binder < binder_threshold:
+                    obs_center = np.array([obstacle_center_pt.x, obstacle_center_pt.y])
+                    vec_to_obs = obs_center - drawing_centroid
+                    side = np.cross(radial_unit, vec_to_obs / (np.linalg.norm(vec_to_obs) + 1e-6))
+                    slide_dir = tangent_vec if side < 0 else -tangent_vec
+                    mag = (binder_threshold - dist_binder) * W_BINDER_DODGE
+                    force_vector += slide_dir * mag
+
+            for ink_poly in ink_polys:
+                _apply_binder_repulsion(ink_poly, ink_poly.centroid)
+
+            for other_id, other_ol in overflow_candidates.items():
+                if other_id == node_id: continue
+                other_poly = Polygon(other_ol.bbox_corners)
+                _apply_binder_repulsion(other_poly, other_poly.centroid)
+
+            #####################
+            # Displacement
+            #####################
+            force_mag = np.linalg.norm(force_vector)
+            delta = force_vector * STEP_SIZE  # scale but preserve direction ratios
+            if force_mag > 1.0:
+                delta = (force_vector / force_mag) * STEP_SIZE  # only clamp if too large
+
+            proposed_center = current_center + delta
+
+            #####################
+            # Guards
+            #####################
+            valid = True
+
             tw, th = _label_wh(ol)
             anchors = _anchor_points(proposed_center[0], proposed_center[1], tw, th)
-            best_anchor_name = ol.anchor
-            max_align = -1.0
-            node_vec = node_pos - proposed_center
-            for name, pt in anchors.items():
-                anchor_vec = np.array(pt) - proposed_center
-                align = np.dot(node_vec, anchor_vec) / (np.linalg.norm(node_vec) * np.linalg.norm(anchor_vec) + 1e-6)
-                if align > max_align:
-                    max_align = align
-                    best_anchor_name = name
-
-            # --- PHASE C: GUARD VALIDATION ---
-            valid = True
             proposed_poly_tight = Polygon(_get_tight_corners(proposed_center, tw, th))
-            proposed_anchor_pt = anchors[best_anchor_name]
-            proposed_binder = LineString([proposed_anchor_pt, node_pos])
+            proposed_binder = LineString([anchors[ol.anchor], node_pos])
 
-            # G0: MIN_BINDER_LENGTH Guard
-            dist_to_drawing_proposed = outer_polygon.distance(proposed_poly_tight)
-            if dist_to_drawing_proposed < MIN_BINDER_LENGTH:
-                valid = False
+            # minimal binder length
+            dist_current = outer_polygon.distance(Polygon(ol.bbox_corners))
+            dist_proposed = outer_polygon.distance(proposed_poly_tight)
+            if dist_proposed < MIN_BINDER_LENGTH:
+                if dist_proposed < dist_current:
+                    # print(node_id, 'minimal binder length')
+                    valid = False
 
-            # G1: Directional
-            if np.dot(node_pos - drawing_centroid, proposed_center - node_pos) <= 0:
-                valid = False
-            # G2: Box Collision
-            if valid and proposed_poly_tight.intersects(placed_union):
-                valid = False
-            # G3: Binder vs Fixed Labels
+            # keep labels outside
             if valid:
-                for f_poly in fixed_polys_for_line:
-                    if proposed_binder.intersects(f_poly):
-                        valid = False; break
-            # G4: Dynamic Interaction
+                radial_dir = node_pos - drawing_centroid
+                label_dir = proposed_center - node_pos
+                if np.dot(radial_dir, label_dir) < -0.5:
+                    # print(node_id, 'keep labels outside')
+                    valid = False
+
+            # prevent intersections with label candidates
+            if valid:
+                if proposed_poly_tight.intersects(placed_union):
+                    # print(node_id, 'intersects placed union')
+                    valid = False
+            if valid:
+                for ink in ink_polys:
+                    if proposed_binder.intersects(ink):
+                        # print(node_id, 'binder intersects ink')
+                        valid = False
+        
             if valid:
                 for other_id in unbounded_overflow_labels:
-                    if other_id == node_id: continue
+                    if other_id == node_id:
+                        continue
+                
                     other = overflow_candidates[other_id]
                     other_poly_tight = Polygon(other.bbox_corners)
                     other_anchor_pt = _get_actual_anchor_pt(other)
                     other_binder = LineString([other_anchor_pt, G.nodes[other_id]['pos']])
-                    
+
                     if proposed_poly_tight.intersects(other_poly_tight):
-                        valid = False; break
-                    if proposed_binder.intersects(other_poly_tight):
-                        valid = False; break
+                        # print(node_id, 'intersects another overflow label')
+                        valid = False
+                        break
                     if proposed_poly_tight.intersects(other_binder):
-                        valid = False; break
+                        # print(node_id, 'intersects another binder')
+                        valid = False
+                        break
 
             if valid:
-                pending_updates[node_id] = (proposed_center, best_anchor_name)
+                synthetic_placed = []
+                for other_lid, other_ol in overflow_candidates.items():
+                    if other_lid == node_id:
+                        continue
+                
+                    # Check if we have a fresh candidate position for this label
+                    if other_lid in pending_updates and pending_updates[other_lid] is not None:
+                        cand = pending_updates[other_lid]
+                        synthetic_placed.append({
+                            "label_id":     other_lid,
+                            "position":     cand[0],
+                            "binding_line": cand[2],
+                        })
+                    # Fallback to the existing committed state
+                    else:
+                        synthetic_placed.append({
+                            "label_id":     other_lid,
+                            "position":     other_ol.center,
+                            "binding_line": getattr(other_ol, "binding_line", None),
+                        })
 
-        for nid, (new_center, new_anchor) in pending_updates.items():
+                # validate binding line
+                if not binding_line_valid(
+                    proposed_binder,
+                    ol.node_id,
+                    node_id,
+                    G,
+                    synthetic_placed,
+                    overflow_candidates,
+                    label_candidates,
+                    soft = True
+                ):
+                    # print(node_id, 'invalid binder')
+                    valid = False
+
+            if valid:
+                pending_updates[node_id] = (proposed_center, ol.anchor, proposed_binder)
+
+        if not pending_updates:
+            print(f'Converged after {i+1} iterations')
+            return overflow_candidates
+
+        for nid, (new_center, new_anchor, _) in pending_updates.items():
+            print(pending_updates)
             update_overflow_label_position(
                 overflow_candidates[nid], new_center[0], new_center[1], new_anchor
             )
 
+    print('Reached max iterations')
     return overflow_candidates
 
 def _get_tight_corners(center, w, h):

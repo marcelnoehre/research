@@ -99,7 +99,7 @@ def _sort_by_node_angle(assigned, gap, centroid, G, overflow_candidates):
     return sorted(assigned, key=key)
 
 # ── Phase 1: per-label candidate generation ──────────────────────────────────
-OUTER_MARGIN = 0.1
+OUTER_MARGIN = 0.25
 GRID_STEP = 0.5
 
 def _generate_candidates(
