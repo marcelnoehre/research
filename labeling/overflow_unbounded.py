@@ -278,7 +278,7 @@ def _generate_candidates(
                 c_type = W_TYPE
         elif label.label_type == 'extent':
             if (anchor_shapely_pt.y > node_pos[1]) or (max_y > node_pos[1]):
-                c_typ = W_TYPE
+                c_type = W_TYPE
 
         c_angle    = angle_offset           * W_ANGLE
         c_binder   = anchor_binder.length   * W_BINDER

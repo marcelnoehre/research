@@ -10,6 +10,7 @@ W_INNER_PROXIMITY = 5.0   # Push away from internal drawing
 W_GLOBAL_PROXIMITY = 5.0  # Push away from other overflow labels (Tangential)
 W_SPRING = 1.0            # Pull toward node (Stronger to keep binders short)
 W_BINDER_DODGE = 5.0      # Push binder away from fixed labels
+W_HALF_PLANE = 5.0       # Keep labels in the correct half plane
 ITERATIONS = 100
 STEP_SIZE = 0.1
 MIN_BINDER_LENGTH = 0.25      
@@ -169,6 +170,19 @@ def optimize_overflow_labels(
                 if other_id == node_id: continue
                 other_poly = Polygon(other_ol.bbox_corners)
                 _apply_binder_repulsion(other_poly, other_poly.centroid)
+
+            if ol.label_type in ['intent', 'extent']:
+                tw, th = _label_wh(ol)
+                min_y = current_center[1] - th/2
+                max_y = current_center[1] + th/2
+                is_violating = (ol.label_type == 'intent' and min_y < node_pos[1]) or (ol.label_type == 'extent' and max_y > node_pos[1])
+                if is_violating:
+                    up_vec = np.array([0.0, 1.0])
+                    side = np.cross(radial_unit, up_vec)
+                    direction_multiplier = 1.0 if ol.label_type == 'intent' else -1.0
+                    slide_dir = tangent_vec if (side * direction_multiplier) > 0 else -tangent_vec
+                    infringement = (node_pos[1] - min_y) if ol.label_type == 'intent' else (max_y - node_pos[1])
+                    force_vector += slide_dir * (infringement + 0.1) * W_HALF_PLANE
 
             #####################
             # Displacement
