@@ -56,6 +56,7 @@ W_TIGHT_OVERLAP = 80.0  # penalty for ink overlaps
 W_OVERLAP       = 10.0  # penalty for padding overlaps
 W_PADDING       = 5.0   # penalty for padding
 W_MISS          = 1e6   # penalty for unplaced label
+W_TYPE          = 100.0 # penalty for labels in the wrong half space
 
 ITERATIVE_HUNGARIAN_MAX_ITERS = 50
 ITER_PENALTY_MULTIPLIER       = 2.0
@@ -105,9 +106,9 @@ GRID_STEP = 0.5
 
 def _generate_candidates(
     centroid, outer_polygon, placed_union,
-    label, node_pos, own_node_id, own_label_id,
-    G, overflow_candidates, label_candidates,
-    top_k=OUTER_CANDIDATE_POOL,
+    label: OverflowLabel, node_pos, own_node_id,
+    own_label_id, G, overflow_candidates,
+    label_candidates, top_k=OUTER_CANDIDATE_POOL
 ) -> List[dict]:
     """
     Grid-based candidate generation.
@@ -269,16 +270,26 @@ def _generate_candidates(
 
         dist_to_boundary = poly_ext.distance(anchor_shapely_pt)
 
+        _, min_y, _, max_y = tight_bbox.bounds
+
+        c_type = 0.0
+        if label.label_type == 'intent':
+            if (anchor_shapely_pt.y < node_pos[1]) or (min_y < node_pos[1]):
+                c_type = W_TYPE
+        elif label.label_type == 'extent':
+            if (anchor_shapely_pt.y > node_pos[1]) or (max_y > node_pos[1]):
+                c_typ = W_TYPE
+
         c_angle    = angle_offset           * W_ANGLE
         c_binder   = anchor_binder.length   * W_BINDER
         c_align    = (1.0 - chosen_align)   * W_ALIGN
         c_boundary = dist_to_boundary       * W_BOUNDARY
-        cost       = c_angle + c_binder + c_align + c_boundary
+        cost       = c_angle + c_binder + c_align + c_boundary + c_type
 
         print(f"  label={own_label_id} dist={dist:.1f} "
-                    f"| c_angle={c_angle:.1f} "
-                    f"c_binder={c_binder:.1f} c_align={c_align:.1f} "
-                    f"c_boundary={c_boundary:.1f} | total={cost:.1f}")
+                    f"| c_angle={c_angle:.1f} c_binder={c_binder:.1f}"
+                    f" c_align={c_align:.1f} c_boundary={c_boundary:.1f}"
+                    f" c_type={c_type:.1f} | total={cost:.1f}")
 
         scored.append((cost, {
             'cost':        cost,

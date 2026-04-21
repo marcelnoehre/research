@@ -357,7 +357,7 @@ def _draw_dynamic_candidate(ax, anchor_type, text, pos_coord, fontsize_pt, alpha
     dx = pos_coord[0] - anchor_pt_raw[0]
     dy = pos_coord[1] - anchor_pt_raw[1]
 
-    t.set_fontsize(font_size + 2.0)
+    t.set_fontsize(FONT_SIZE + 2.0)
     t.set_position((pos_coord[0] + dx, pos_coord[1] + dy - 0.0005))
 
     def shift(pts): return [(p[0] + dx, p[1] + dy) for p in pts]
@@ -395,7 +395,6 @@ if __name__ == "__main__":
 
     side_anchors = [('left', 'L'), ('right', 'R'), ('top', 'T'), ('bottom', 'B')]
     corner_anchors = [('top_left', 'TL'), ('top_right', 'TR'), ('bottom_left', 'BL'), ('bottom_right', 'BR')]
-    font_size = 12.0
     units_per_mm = 1.0
 
     fig, ax = plt.subplots(figsize=(8, 6))

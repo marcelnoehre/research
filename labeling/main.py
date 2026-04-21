@@ -16,7 +16,7 @@ from forces import *
 ################################################################################ 
 # Data
 ################################################################################
-FILE = 'living_beings_and_water'
+FILE = 'living_beings_and_water_original'
 parser = Parser()
 cxt = parser.decode_cxt(f'../data/{FILE}.cxt')
 print(cxt.print_data())
@@ -86,9 +86,9 @@ plot_lattice(
 ################################################################################
 types = ['general', 'extent', 'intent']
 label_config = {
-    'general': True,
-    'extent':  False,
-    'intent':  False
+    'general': False,
+    'extent':  True,
+    'intent':  True
 }
 label_candidates = {}
 label_texts = {}

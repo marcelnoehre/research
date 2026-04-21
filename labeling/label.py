@@ -17,8 +17,9 @@ MAX_ROW_CHARS = 10
 K_ROWS = 2
 PHYSICAL_HEIGHT_MM = 100.0
 DPI = 150.0
+FONT_SIZE = 13.0
 
-def compute_suggested_font_size(G: nx.Graph, base_font_size: float = 12.0) -> float:
+def compute_suggested_font_size(G: nx.Graph, base_font_size: float = FONT_SIZE) -> float:
     '''
     Calculates a font size that scales down if the lattice is narrow.
     '''
