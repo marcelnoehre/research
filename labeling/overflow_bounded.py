@@ -1,7 +1,7 @@
 import numpy as np
 import networkx as nx
 
-from shapely import unary_union
+from shapely import box, unary_union
 from shapely.geometry import LineString, Point, Polygon
 from typing import Dict, List, Optional, Tuple
 
@@ -51,7 +51,7 @@ def _anchor_points(cx: float, cy: float, w: float, h: float) -> Dict[str, Tuple[
         'bottom_right': (cx + hw, cy - hh),
     }
 
-def _eroded_space(space: Polygon, w: float, h: float) -> Polygon:
+def _eroded_space(space: Polygon, w: float, h: float, below: float, above: float) -> Polygon:
     '''
     Return the set of valid center positions for a label inside space
     '''
@@ -59,10 +59,20 @@ def _eroded_space(space: Polygon, w: float, h: float) -> Polygon:
     eroded = space.buffer(-smaller / 2, join_style=2)
     if eroded.is_empty:
         return eroded
-    return eroded.buffer(-(larger - smaller) / 2, join_style=2)
+    
+    eroded = eroded.buffer(-(larger - smaller) / 2, join_style=2)
+
+    if (below is not None) or (above is not None):
+        min_x, min_y, max_x, max_y = space.bounds
+        limit_top = min(max_y, below) if below is not None else max_y
+        limit_bottom = max(min_y, above) if above is not None else min_y
+        clip_box = box(min_x, limit_bottom, max_x, limit_top)
+        eroded = eroded.intersection(clip_box)
+    
+    return eroded
 
 
-def _fits(space: Polygon, w: float, h: float) -> bool:
+def _fits(space: Polygon, w: float, h: float, type: str, node_y: float) -> bool:
     '''
     Check wether label fits into polygon.
     '''
@@ -71,7 +81,15 @@ def _fits(space: Polygon, w: float, h: float) -> bool:
     s_minx, s_miny, s_maxx, s_maxy = space.bounds
     if w > (s_maxx - s_minx) or h > (s_maxy - s_miny) or w * h > space.area:
         return False
-    return not _eroded_space(space, w, h).is_empty
+    
+    below = None
+    above = None
+    if type == 'extent':
+        below = node_y
+    if type == 'intent':
+        above = node_y
+
+    return not _eroded_space(space, w, h, below, above).is_empty
 
 def _fitting_faces(
     overflow_candidates: Dict[int, OverflowLabel],
@@ -85,7 +103,7 @@ def _fitting_faces(
         ew, eh = _label_wh_expanded(label)
         results[label_id] = [
             fid for fid, space in processed_faces
-            if _fits(space, ew, eh)
+            if _fits(space, ew, eh, label.label_type, label.center[1])
         ]
     return results
 
@@ -185,7 +203,13 @@ def _find_valid_position(
     hw, hh = w / 2, h / 2
 
     # eroded space
-    eroded = _eroded_space(space, ew, eh)
+    below = None
+    above = None
+    if label.label_type == 'extent':
+        below = label.center[1]
+    if label.label_type == 'intent':
+        above = label.center[1]
+    eroded = _eroded_space(space, ew, eh, below, above)
     if eroded.is_empty:
         return None
 
@@ -355,6 +379,7 @@ def place_inner_overflow_labels(
     results: Dict[int, List[int]],
     processed_faces: List[Tuple],
     centers: List[Tuple],
+    bounded_faces: List[List[int]]
 ) -> List[dict]:
     '''
     pick the largest remaining face and find the closest unplaced node that fits
@@ -388,7 +413,10 @@ def place_inner_overflow_labels(
             candidates = [
                 lid for lid in face_to_labels.get(face_id, [])
                 if lid not in placed_label_ids
-                and _fits(space, *_label_wh_expanded(overflow_candidates[lid]))
+                and _fits(space, 
+                          *_label_wh_expanded(overflow_candidates[lid]), 
+                          type=overflow_candidates[lid].label_type, 
+                          node_y=overflow_candidates[lid].center[1])
             ]
 
             # skip face if no label fits
@@ -396,13 +424,28 @@ def place_inner_overflow_labels(
                 continue
 
             # node closest to the center of remaining space in the face
+            incident_candidates = [lid for lid in candidates if lid in bounded_faces[face_id]]
+
             chosen_label = min(
-                candidates,
+                incident_candidates,
                 key=lambda lid: np.linalg.norm(
                     np.array(G.nodes[overflow_candidates[lid].node_id]["pos"])
                     - face_center
-                )
+                ),
+                default=None
             )
+
+            if not chosen_label:
+                non_incident_candidates = [lid for lid in candidates if lid not in bounded_faces[face_id]]
+
+                chosen_label = min(
+                    non_incident_candidates,
+                    key=lambda lid: np.linalg.norm(
+                        np.array(G.nodes[overflow_candidates[lid].node_id]["pos"])
+                        - face_center
+                    ),
+                    default=None
+                )
 
             chosen_face = face_id
             break
@@ -493,7 +536,7 @@ def inner_overflow_labels(
 
     # inner placement
     placements = place_inner_overflow_labels(
-        G, overflow_candidates, label_candidates, results, processed_faces, centers
+        G, overflow_candidates, label_candidates, results, processed_faces, centers, bounded_faces
     )
 
     # update overflow candidates with final positions

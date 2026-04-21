@@ -49,7 +49,7 @@ MAX_LABEL_DIST      = 2.0
 W_ALIGN         = 1.0   # anchor alignment
 W_ANGLE         = 0.5   # natural angle
 W_BOUNDARY      = 3.0   # close to polygon boundary
-W_BINDER        = 5.0   # length of binding line
+W_BINDER        = 10.0   # length of binding line
 W_BINDER_INTERSECT = 50.0 # penalty for binder intersecting another label
 W_BINDER_CROSS  = 8.0   # penalty for crossing binding lines
 W_TIGHT_OVERLAP = 80.0  # penalty for ink overlaps 
@@ -57,7 +57,7 @@ W_OVERLAP       = 10.0  # penalty for padding overlaps
 W_PADDING       = 5.0   # penalty for padding
 W_MISS          = 1e6   # penalty for unplaced label
 
-ITERATIVE_HUNGARIAN_MAX_ITERS = 20
+ITERATIVE_HUNGARIAN_MAX_ITERS = 50
 ITER_PENALTY_MULTIPLIER       = 2.0
 
 def _generate_candidates_task(args: dict) -> tuple[int, list[dict]]:
@@ -100,7 +100,7 @@ def _sort_by_node_angle(assigned, gap, centroid, G, overflow_candidates):
     return sorted(assigned, key=key)
 
 # ── Phase 1: per-label candidate generation ──────────────────────────────────
-OUTER_MARGIN = 0.25
+OUTER_MARGIN = 0.5
 GRID_STEP = 0.5
 
 def _generate_candidates(
@@ -291,7 +291,7 @@ def _generate_candidates(
             'binder':      anchor_binder,
         }))
 
-    scored.sort(key=lambda x: x[0])
+    scored.sort(key=lambda x: (x[0], x[1]['cx'], x[1]['cy']))
     return [c for _, c in scored[:top_k]]
 
 # ── Phase 2: global assignment ────────────────────────────────────────────────
@@ -580,15 +580,14 @@ def outer_overflow_labels(
             })
     
     with ThreadPoolExecutor() as pool:
-        futures = {pool.submit(_generate_candidates_task, t): t["node_id"] for t in tasks}
-        for fut in as_completed(futures):
-            node_id, cands = fut.result()
+        results = pool.map(_generate_candidates_task, tasks)
+        for node_id, cands in results:
             all_candidates[node_id] = cands
             if not cands:
                 print(f"Warning: no candidates generated for label {node_id}")
 
     # ── Phase 2: global assignment ────────────────────────────────────────────
-    label_ids  = list(all_candidates.keys())
+    label_ids  = sorted(all_candidates.keys())
     assignment = _solve_assignment(label_ids, all_candidates, OUTER_CANDIDATE_POOL)
 
     for node_id, chosen in assignment.items():

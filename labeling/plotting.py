@@ -68,6 +68,20 @@ def _draw_candidate(
         }[candidate.anchor]
         ax.scatter(*anchor_pt, color=colour, s=30, zorder=10, alpha=0.9, clip_on=False)
 
+    else:
+        padding = 0.1
+        ax.add_patch(mpatches.Polygon(
+            [
+                (ibl[0] - padding, ibl[1] - padding), # Bottom Left
+                (ibr[0] + padding, ibr[1] - padding), # Bottom Right
+                (itr[0] + padding, itr[1] + padding), # Top Right
+                (itl[0] - padding, itl[1] + padding)  # Top Left
+            ], closed=True, 
+            facecolor='white', edgecolor='grey',
+            alpha=0.30, linestyle='-', linewidth=0.5,
+            zorder=3, clip_on=False
+        ))
+
     text_color = colour if colored_label_candidates else 'black'
     cx, cy = candidate.center
     return ax.text(
@@ -125,6 +139,18 @@ def _draw_overflow_candidate(
             [ebl, ebr, etr, etl], closed=True,
             facecolor='none', edgecolor=colour,
             alpha=0.55, linestyle=':', linewidth=1.0,
+            zorder=3, clip_on=False
+        ))
+    else:
+        ax.add_patch(mpatches.Polygon(
+            [
+                (bl[0] - 0.05, bl[1]), # Bottom Left
+                (br[0] + 0.05, br[1]), # Bottom Right
+                (tr[0] + 0.05, tr[1]), # Top Right
+                (tl[0] - 0.05, tl[1])  # Top Left
+            ], closed=True, 
+            facecolor='white', edgecolor='grey',
+            alpha=0.30, linestyle='-', linewidth=0.5,
             zorder=3, clip_on=False
         ))
 
