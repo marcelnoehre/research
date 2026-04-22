@@ -4,8 +4,8 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.backends.backend_agg import FigureCanvasAgg
-from TexSoup import TexSoup
 import re
+from functools import lru_cache
 
 matplotlib.rcParams.update({
     "text.usetex": True,
@@ -21,6 +21,8 @@ K_ROWS = 2
 PHYSICAL_HEIGHT_MM = 100.0
 DPI = 150.0
 FONT_SIZE = 8.0
+_MATH_RE     = re.compile(r'(\$[^$]+\$)')
+_LATEX_CHARS = frozenset('\\{_^')
 
 def compute_suggested_font_size(G: nx.Graph, base_font_size: float = FONT_SIZE) -> float:
     '''
@@ -59,122 +61,198 @@ class LabelCandidate:
     expanded_bbox_corners: Tuple[Tuple, Tuple, Tuple, Tuple]
     center: Tuple[float, float]
 
-def wrap_label_text(plain_text: str, type: str, formatter=str, k_rows: int = K_ROWS, max_row_chars: int = MAX_ROW_CHARS) -> str:
-    '''
-    Wraps label text into at most k_rows rows, minimizing variance in row lengths.
-    Works with both plain text and LaTeX source (uses TexSoup for word-boundary detection).
-    '''
+def wrap_label_text(
+    plain_text:    str,
+    label_type:    str,
+    formatter=     str,
+    k_rows:        int = K_ROWS,
+    max_row_chars: int = MAX_ROW_CHARS,
+) -> str:
+    """
+    Wrap *plain_text* into at most *k_rows* rows and return a LaTeX string.
+ 
+    Parameters
+    ----------
+    plain_text    : raw label text (plain or containing LaTeX).
+    label_type    : 'general', 'extent', or 'intent' — controls formatting.
+    formatter     : optional callable applied to each word-chunk before
+                    LaTeX formatting (e.g. a translation function).
+    k_rows        : maximum number of rows.
+    max_row_chars : labels shorter than this are never split.
+    """
     if not plain_text:
         return plain_text
-    
+ 
     words = _split_words(plain_text)
-
-    # Forced to one row or too short to bother splitting
-    if k_rows == 1 or len(plain_text) <= max_row_chars or len(words) <= 1:
-        return format_row(formatter(plain_text), type)
-
-    best_splits = _find_best_splits(words, k_rows)
-
+    n     = len(words)
+ 
+    if k_rows == 1 or len(plain_text) <= max_row_chars or n <= 1:
+        return _format_row(formatter(plain_text), label_type)
+ 
+    # Only word *lengths* (not the actual words) determine where to split,
+    # so the cache key is length-tuples → very high hit rate for repeated labels.
+    splits = _best_splits_cached(tuple(len(w) for w in words), k_rows)
+ 
     rows = []
     prev = 0
-    for split in best_splits:
-        rows.append(formatter(' '.join(words[prev:split])))
-        prev = split
+    for s in splits:
+        rows.append(formatter(' '.join(words[prev:s])))
+        prev = s
     rows.append(formatter(' '.join(words[prev:])))
-
-    # Build nested LaTeX tabular for multi-line labels
-    formatted_rows = [format_row(row, type) for row in rows]
-    joined = r' \\[-2pt] '.join(formatted_rows)
+ 
+    formatted = [_format_row(r, label_type) for r in rows]
+    joined    = r' \\[-1pt] '.join(formatted)
     return rf'\begin{{tabular}}{{@{{}}c@{{}}}}{joined}\end{{tabular}}'
 
-def format_row(row: str, label_type: str) -> str:
+def _format_row(row: str, label_type: str) -> str:
     if label_type != 'intent':
         return rf'{{\small\textrm{{{row}}}}}'
-    
-    parts = re.split(r'(\$[^$]+\$)', row)
+ 
+    parts  = _MATH_RE.split(row)
     result = []
     for part in parts:
         if part.startswith('$') and part.endswith('$'):
-            result.append(part[1:-1])
+            result.append(part[1:-1])          # strip delimiters; already math
         elif part.strip():
-            result.append(rf'\mathit{{{part}}}')
-    
+            result.append(rf'\textit{{{part}}}')
     return rf'${{\small {"".join(result)}}}$'
 
 def _split_words(text: str) -> list[str]:
-    '''
-    Split text into words, respecting LaTeX command boundaries via TexSoup.
-    Falls back to whitespace splitting for plain text.
-    '''
-    if '\\' in text or '{' in text or '_' in text or '^' in text:
-        try:
-            soup = TexSoup(text, skip_envs=(), tolerance=1)
-            tokens = []
-            for node in soup.children:
-                s = str(node).strip()
-                if s:
-                    tokens.append(s)
-            if len(tokens) > 1 and ''.join(tokens) == ''.join(text.split()):
-                return tokens
-        except Exception:
-            pass
-
-    return text.split()
-
-
-def _find_best_splits(words: list[str], k: int) -> list[int]:
-    '''
-    Dynamic programming: partition `words` into at most k non-empty rows
-    minimising variance (equiv. minimising sum of squared lengths).
-    Returns split indices (exclusive end of each row except the last).
-    '''
-    n = len(words)
-    k = min(k, n)  # can't have more rows than words
-
-    # Precompute cumulative lengths including spaces
-    # cum_len[i] = total chars in words[0..i-1] joined by spaces
-    cum_len = [0] * (n + 1)
-    for i in range(n):
-        cum_len[i + 1] = cum_len[i] + len(words[i]) + (1 if i > 0 else 0)
-
-    def row_len(i, j):
-        '''Length of words[i:j] joined by spaces.'''
-        length = cum_len[j] - cum_len[i]
-        if i > 0:
-            length -= 1  # remove the leading space offset
-        return cum_len[j] - cum_len[i] - (1 if i > 0 else 0)
-
-    # dp[r][i] = (min cost, split list) using r rows for words[0:i]
-    INF = float('inf')
-    dp  = [[INF] * (n + 1) for _ in range(k + 1)]
-    par = [[None] * (n + 1) for _ in range(k + 1)]
-    dp[0][0] = 0
-
-    for r in range(1, k + 1):
-        for j in range(r, n + 1):          # need at least r words for r rows
-            for i in range(r - 1, j):      # words[i:j] form row r
-                rl = row_len(i, j)
-                cost = dp[r - 1][i] + rl * rl
-                if cost < dp[r][j]:
-                    dp[r][j] = cost
-                    par[r][j] = i
-
-    # Find best number of rows (1..k) — might be better to use fewer
-    best_r, best_cost = k, dp[k][n]
-    for r in range(1, k):
-        if dp[r][n] < best_cost:
-            best_cost, best_r = dp[r][n], r
-
-    # Traceback
-    splits = []
-    j = n
-    for r in range(best_r, 0, -1):
-        i = par[r][j]
-        if r > 1:
-            splits.append(i)
+    """Split into words respecting LaTeX/math boundaries."""
+    if not any(c in text for c in _LATEX_CHARS):
+        return text.split()
+ 
+    tokens: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+ 
+        if c in ' \t\n':
+            i += 1
+            continue
+ 
+        if c == '$':
+            j = text.find('$', i + 1)
+            if j == -1:
+                j = n - 1
+            tokens.append(text[i : j + 1])
+            i = j + 1
+            continue
+ 
+        if c == '\\':
+            j = i + 1
+            while j < n and text[j].isalpha():
+                j += 1
+            if j == i + 1 and j < n:   # single non-alpha command char
+                j += 1
+            if j < n and text[j] == '{':
+                depth, k = 1, j + 1
+                while k < n and depth:
+                    if   text[k] == '{': depth += 1
+                    elif text[k] == '}': depth -= 1
+                    k += 1
+                j = k
+            tokens.append(text[i : j])
+            i = j
+            continue
+ 
+        if c == '{':
+            depth, j = 1, i + 1
+            while j < n and depth:
+                if   text[j] == '{': depth += 1
+                elif text[j] == '}': depth -= 1
+                j += 1
+            tokens.append(text[i : j])
+            i = j
+            continue
+ 
+        # plain word
         j = i
-    splits.reverse()
+        while j < n and text[j] not in ' \t\n\\{$':
+            j += 1
+        tokens.append(text[i : j])
+        i = j
+ 
+    return tokens or text.split()
+
+@lru_cache(maxsize=4096)
+def _best_splits_cached(word_lens: tuple[int, ...], k: int) -> tuple[int, ...]:
+    """
+    Cached wrapper around the DP.  Key is word *lengths* only, so labels
+    that differ in content but have the same length profile share a result.
+    Returns split indices as a tuple (hashable, cache-friendly).
+    """
+    return tuple(_dp_splits(word_lens, k))
+ 
+ 
+def _dp_splits(word_lens: tuple[int, ...], k: int) -> list[int]:
+    """
+    O(k · n²) DP partitioning *word_lens* into at most *k* rows,
+    minimising the sum of squared row lengths (≡ minimising variance).
+    Returns a list of split indices (exclusive end of each row except last).
+    """
+    n = len(word_lens)
+    k = min(k, n)
+ 
+    # cum[i] = total chars in words[0..i-1] joined by single spaces
+    cum = [0] * (n + 1)
+    for i, wl in enumerate(word_lens):
+        cum[i + 1] = cum[i] + wl + (1 if i else 0)
+ 
+    # seg_sq[i][j] = (length of words[i:j])²
+    seg_sq = [[0] * (n + 1) for _ in range(n)]
+    for i in range(n):
+        base = cum[i]
+        off  = 1 if i else 0
+        for j in range(i + 1, n + 1):
+            raw = cum[j] - base - off
+            seg_sq[i][j] = raw * raw
+ 
+    INF    = float('inf')
+    stride = n + 1
+    dp     = [INF] * ((k + 1) * stride)
+    par    = [-1]  * ((k + 1) * stride)
+    dp[0]  = 0.0
+ 
+    for r in range(1, k + 1):
+        r_off  = r       * stride
+        r1_off = (r - 1) * stride
+        sq_r   = seg_sq  # local ref for speed
+        for j in range(r, n + 1):
+            best = INF
+            bi   = -1
+            for i in range(r - 1, j):
+                prev = dp[r1_off + i]
+                if prev == INF:
+                    continue
+                cost = prev + sq_r[i][j]
+                if cost < best:
+                    best = cost
+                    bi   = i
+            dp[r_off + j] = best
+            par[r_off + j] = bi
+ 
+    # choose fewest rows that achieve the minimum cost
+    best_r    = k
+    best_cost = dp[k * stride + n]
+    for r in range(1, k):
+        c = dp[r * stride + n]
+        if c < best_cost:
+            best_cost = c
+            best_r    = r
+ 
+    # traceback
+    splits: list[int] = [0] * (best_r - 1)
+    j = n
+    for r in range(best_r, 1, -1):
+        i          = par[r * stride + j]
+        splits[r - 2] = i
+        j          = i
+ 
     return splits
+
+
 
 def measure_ink_mm(text: str, fontsize_pt: float, desired_height: float) -> tuple[float, float, float]:
     '''
@@ -190,7 +268,7 @@ def measure_ink_mm(text: str, fontsize_pt: float, desired_height: float) -> tupl
     canvas.draw()
     renderer = canvas.get_renderer()
     
-    bbox = t.get_tightbbox(renderer)
+    bbox = t.get_window_extent(renderer)
     px_per_mm = DPI / 25.4
     initial_height_mm = bbox.height / px_per_mm
     plt.close(fig)
@@ -200,7 +278,7 @@ def measure_ink_mm(text: str, fontsize_pt: float, desired_height: float) -> tupl
 
     # 2. Calculate the scale
     # Ratio of how much bigger/smaller the font needs to be
-    rows = len(text.split(r'\\[-2pt]'))
+    rows = len(text.split(r'\\[-1pt]'))
     height_ratio = (desired_height * rows + 0.1 * rows) / initial_height_mm
     new_fontsize = fontsize_pt * height_ratio
     scale = new_fontsize - fontsize_pt
@@ -214,7 +292,7 @@ def measure_ink_mm(text: str, fontsize_pt: float, desired_height: float) -> tupl
     canvas.draw()
     renderer = canvas.get_renderer()
     
-    bbox = t.get_tightbbox(renderer)
+    bbox = t.get_window_extent(renderer)
     final_w_mm = bbox.width / px_per_mm
     final_h_mm = bbox.height / px_per_mm
     plt.close(fig)
@@ -263,7 +341,7 @@ def compute_label_candidates(
     ink_w_mm, ink_h_mm, scale = measure_ink_mm(label_text, font_size, desired_height)
 
     # padding
-    rows = len(label_text.split(r'\\[-2pt]'))
+    rows = len(label_text.split(r'\\[-1pt]'))
     padding = (ink_h_mm / rows - 0.1 * rows) * 0.75
 
     # Inner half-extents (ink only, no padding)
@@ -387,7 +465,7 @@ def compute_overflow_label(
     # padding
     corner_multiplier = 1 / np.sqrt(2)
     s = (1.0 / corner_multiplier)
-    rows = len(label_text.split(r'\\[-2pt]'))
+    rows = len(label_text.split(r'\\[-1pt]'))
     padding = (ink_h_mm / rows - 0.1 * rows) * 0.75
 
     # Ink only

@@ -85,11 +85,11 @@ def _draw_candidate(
     text_color = colour if colored_label_candidates else 'black'
     cx, cy = candidate.center
     
-    rows = len(label_text.split(r'\\[-2pt]'))
+    rows = len(label_text.split(r'\\[-1pt]'))
     translate_x = 0.0
-    if '\mathit' in label_text:
+    if '\textit' in label_text:
         translate_x = -0.025 if 'left' in candidate.anchor else 0.025
-    translate_y = 0.025 if ('\mathit' in label_text and candidate.anchor != 'bottom') else 0.0
+    translate_y = 0.025 if ('\textit' in label_text and candidate.anchor != 'bottom') else 0.0
     translate_y *= rows
 
     return ax.text(
@@ -170,11 +170,11 @@ def _draw_overflow_candidate(
     text_color = colour if colored_label_candidates else 'black'
     cx, cy = candidate.center
 
-    rows = len(label_text.split(r'\\[-2pt]'))
+    rows = len(label_text.split(r'\\[-1pt]'))
     translate_x = 0.0
-    if '\mathit' in label_text:
+    if '\textit' in label_text:
         translate_x = -0.025 if 'left' in candidate.anchor else 0.025
-    translate_y = 0.025 if ('\mathit' in label_text) else 0.0
+    translate_y = 0.025 if ('\textit' in label_text) else 0.0
     translate_y *= rows
 
     return ax.text(

@@ -343,7 +343,7 @@ def update_overflow_label_position(label: OverflowLabel, cx: float, cy: float, a
     is_right  = 'right' in anchor
 
     corner_multiplier = 1 / np.sqrt(2)
-    rows = len(label.text.split(r'\\[-2pt]'))
+    rows = len(label.text.split(r'\\[-1pt]'))
     padding = ((itl[1] - ibl[1]) / rows - 0.1 * rows) * 0.75
 
     p_top    = (padding * corner_multiplier) if is_top else padding
@@ -452,7 +452,7 @@ def place_inner_overflow_labels(
             break
 
         # no label fits into a face - stop searching
-        if chosen_face is None:
+        if chosen_face is None or chosen_label is None:
             break
 
         label = overflow_candidates[chosen_label]
