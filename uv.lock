@@ -891,6 +891,7 @@ dependencies = [
     { name = "fca-utils" },
     { name = "numpy" },
     { name = "shapely" },
+    { name = "texsoup" },
 ]
 
 [package.metadata]
@@ -898,6 +899,7 @@ requires-dist = [
     { name = "fca-utils", git = "https://github.com/marcelnoehre/fca-utils.git" },
     { name = "numpy", specifier = ">=2.4.3" },
     { name = "shapely", specifier = ">=2.1.2" },
+    { name = "texsoup", specifier = ">=0.3.3" },
 ]
 
 [[package]]
@@ -1095,6 +1097,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e8/c4/ba2f8066cceb6f23394729afe52f3bf7adec04bf9ed2c820b39e19299111/sortedcontainers-2.4.0.tar.gz", hash = "sha256:25caa5a06cc30b6b83d11423433f65d1f9d76c4c6a0c90e3379eaa43b9bfdb88", size = 30594, upload-time = "2021-05-16T22:03:42.897Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/32/46/9cb0e58b2deb7f82b84065f37f3bffeb12413f947f9388e4cac22c4621ce/sortedcontainers-2.4.0-py2.py3-none-any.whl", hash = "sha256:a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0", size = 29575, upload-time = "2021-05-16T22:03:41.177Z" },
+]
+
+[[package]]
+name = "texsoup"
+version = "0.3.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/9a/87/e15640e4a12579a70d764f45953f3fab07a5c7e8923e77904837966ffd57/texsoup-0.3.3.tar.gz", hash = "sha256:a3e22b61ce890a602eed006c80119f64b1697e48e39f13c0b094c2efc1dc1abf", size = 41438, upload-time = "2026-04-05T11:43:53.071Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0d/60/388c55709eccb28c4245bd809fada603905e09507b722f0a7e0065beb8f7/texsoup-0.3.3-py3-none-any.whl", hash = "sha256:0ad8643f7b51a4903de87c3763a090343fc73eaf87cd70202e2bfe6b22e0ac97", size = 33271, upload-time = "2026-04-05T11:43:51.655Z" },
 ]
 
 [[package]]

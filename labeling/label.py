@@ -4,10 +4,13 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from TexSoup import TexSoup
+import re
 
 matplotlib.rcParams.update({
     "text.usetex": True,
     "font.family": "serif",
+    "text.latex.preamble": r"\usepackage{amsmath}"
 })
 
 from dataclasses import dataclass
@@ -17,7 +20,7 @@ MAX_ROW_CHARS = 10
 K_ROWS = 2
 PHYSICAL_HEIGHT_MM = 100.0
 DPI = 150.0
-FONT_SIZE = 13.0
+FONT_SIZE = 8.0
 
 def compute_suggested_font_size(G: nx.Graph, base_font_size: float = FONT_SIZE) -> float:
     '''
@@ -56,60 +59,175 @@ class LabelCandidate:
     expanded_bbox_corners: Tuple[Tuple, Tuple, Tuple, Tuple]
     center: Tuple[float, float]
 
-def wrap_label_text(plain_text: str, formatter=str) -> str:
+def wrap_label_text(plain_text: str, type: str, formatter=str, k_rows: int = K_ROWS, max_row_chars: int = MAX_ROW_CHARS) -> str:
     '''
+    Wraps label text into at most k_rows rows, minimizing variance in row lengths.
+    Works with both plain text and LaTeX source (uses TexSoup for word-boundary detection).
     '''
-    # split into words
-    words = plain_text.split()
+    if not plain_text:
+        return plain_text
+    
+    words = _split_words(plain_text)
 
-    # forced to one row or smaller than split size
-    if K_ROWS == 1 or len(plain_text) <= MAX_ROW_CHARS or len(words) == 1:
-        return formatter(plain_text)
+    # Forced to one row or too short to bother splitting
+    if k_rows == 1 or len(plain_text) <= max_row_chars or len(words) <= 1:
+        return format_row(formatter(plain_text), type)
 
-    # split into k rows
-    # TODO: more than 2 rows
-    mid = len(plain_text) / 2
-    best_split = 1
-    best_diff = float('inf')
-    for i in range(1, len(words)):
-        row1 = ' '.join(words[:i])
-        diff = abs(len(row1) - mid)
-        if diff < best_diff:
-            best_diff = diff
-            best_split = i
+    best_splits = _find_best_splits(words, k_rows)
 
-    # format
-    row1 = formatter(' '.join(words[:best_split]))
-    row2 = formatter(' '.join(words[best_split:]))
-    return rf'\begin{{tabular}}{{@{{}}c@{{}}}}{row1} \\[-4pt] {row2}\end{{tabular}}'
+    rows = []
+    prev = 0
+    for split in best_splits:
+        rows.append(formatter(' '.join(words[prev:split])))
+        prev = split
+    rows.append(formatter(' '.join(words[prev:])))
 
-def measure_ink_mm(text: str, fontsize_pt: float) -> tuple[float, float]:
+    # Build nested LaTeX tabular for multi-line labels
+    formatted_rows = [format_row(row, type) for row in rows]
+    joined = r' \\[-2pt] '.join(formatted_rows)
+    return rf'\begin{{tabular}}{{@{{}}c@{{}}}}{joined}\end{{tabular}}'
+
+def format_row(row: str, label_type: str) -> str:
+    if label_type != 'intent':
+        return rf'{{\small\textrm{{{row}}}}}'
+    
+    parts = re.split(r'(\$[^$]+\$)', row)
+    result = []
+    for part in parts:
+        if part.startswith('$') and part.endswith('$'):
+            result.append(part[1:-1])
+        elif part.strip():
+            result.append(rf'\mathit{{{part}}}')
+    
+    return rf'${{\small {"".join(result)}}}$'
+
+def _split_words(text: str) -> list[str]:
     '''
-    Return (ink_width_mm, ink_height_mm) by rasterising at 150 DPI.
+    Split text into words, respecting LaTeX command boundaries via TexSoup.
+    Falls back to whitespace splitting for plain text.
     '''
+    if '\\' in text or '{' in text or '_' in text or '^' in text:
+        try:
+            soup = TexSoup(text, skip_envs=(), tolerance=1)
+            tokens = []
+            for node in soup.children:
+                s = str(node).strip()
+                if s:
+                    tokens.append(s)
+            if len(tokens) > 1 and ''.join(tokens) == ''.join(text.split()):
+                return tokens
+        except Exception:
+            pass
+
+    return text.split()
+
+
+def _find_best_splits(words: list[str], k: int) -> list[int]:
+    '''
+    Dynamic programming: partition `words` into at most k non-empty rows
+    minimising variance (equiv. minimising sum of squared lengths).
+    Returns split indices (exclusive end of each row except the last).
+    '''
+    n = len(words)
+    k = min(k, n)  # can't have more rows than words
+
+    # Precompute cumulative lengths including spaces
+    # cum_len[i] = total chars in words[0..i-1] joined by spaces
+    cum_len = [0] * (n + 1)
+    for i in range(n):
+        cum_len[i + 1] = cum_len[i] + len(words[i]) + (1 if i > 0 else 0)
+
+    def row_len(i, j):
+        '''Length of words[i:j] joined by spaces.'''
+        length = cum_len[j] - cum_len[i]
+        if i > 0:
+            length -= 1  # remove the leading space offset
+        return cum_len[j] - cum_len[i] - (1 if i > 0 else 0)
+
+    # dp[r][i] = (min cost, split list) using r rows for words[0:i]
+    INF = float('inf')
+    dp  = [[INF] * (n + 1) for _ in range(k + 1)]
+    par = [[None] * (n + 1) for _ in range(k + 1)]
+    dp[0][0] = 0
+
+    for r in range(1, k + 1):
+        for j in range(r, n + 1):          # need at least r words for r rows
+            for i in range(r - 1, j):      # words[i:j] form row r
+                rl = row_len(i, j)
+                cost = dp[r - 1][i] + rl * rl
+                if cost < dp[r][j]:
+                    dp[r][j] = cost
+                    par[r][j] = i
+
+    # Find best number of rows (1..k) — might be better to use fewer
+    best_r, best_cost = k, dp[k][n]
+    for r in range(1, k):
+        if dp[r][n] < best_cost:
+            best_cost, best_r = dp[r][n], r
+
+    # Traceback
+    splits = []
+    j = n
+    for r in range(best_r, 0, -1):
+        i = par[r][j]
+        if r > 1:
+            splits.append(i)
+        j = i
+    splits.reverse()
+    return splits
+
+def measure_ink_mm(text: str, fontsize_pt: float, desired_height: float) -> tuple[float, float, float]:
+    '''
+    Calculates the scale needed to reach desired_height and returns
+    (final_width_mm, final_height_mm, calculated_scale)
+    '''
+    # 1. First pass: Measure at base fontsize to find the height error
     fig = plt.figure(dpi=DPI)
     ax = fig.add_subplot(111)
-    t = ax.text(0.5, 0.5, text, fontsize=fontsize_pt, usetex=matplotlib.rcParams['text.usetex'])
-
+    t = ax.text(0.5, 0.5, text, fontsize=fontsize_pt, usetex=True)
+    
     canvas = FigureCanvasAgg(fig)
     canvas.draw()
     renderer = canvas.get_renderer()
-
-    bbox = t.get_window_extent(renderer=renderer)
-    width_px = bbox.width
-    height_px = bbox.height
-
+    
+    bbox = t.get_tightbbox(renderer)
+    px_per_mm = DPI / 25.4
+    initial_height_mm = bbox.height / px_per_mm
     plt.close(fig)
 
-    px_per_mm = DPI / 25.4
-    return width_px / px_per_mm, height_px / px_per_mm
+    if desired_height < 0:
+        return -1, initial_height_mm, -1
+
+    # 2. Calculate the scale
+    # Ratio of how much bigger/smaller the font needs to be
+    rows = len(text.split(r'\\[-2pt]'))
+    height_ratio = (desired_height * rows + 0.1 * rows) / initial_height_mm
+    new_fontsize = fontsize_pt * height_ratio
+    scale = new_fontsize - fontsize_pt
+
+    # 3. Second pass: Measure at the new scaled size for final accuracy
+    fig = plt.figure(dpi=DPI)
+    ax = fig.add_subplot(111)
+    t = ax.text(0.5, 0.5, text, fontsize=fontsize_pt + scale, usetex=True)
+    
+    canvas = FigureCanvasAgg(fig)
+    canvas.draw()
+    renderer = canvas.get_renderer()
+    
+    bbox = t.get_tightbbox(renderer)
+    final_w_mm = bbox.width / px_per_mm
+    final_h_mm = bbox.height / px_per_mm
+    plt.close(fig)
+
+    return final_w_mm, final_h_mm, new_fontsize
 
 def compute_label_candidates(
         G: nx.Graph,
         concepts: List[int],
         label_text: str,
-        label_type: str = 'extent'
-) -> Dict[int, List[LabelCandidate]]:
+        label_type: str,
+        desired_height: float
+):
     '''
     For every concept node, return candidate label placements.
 
@@ -123,7 +241,6 @@ def compute_label_candidates(
 
     Returns
     -------
-    dict mapping concept node id → list of LabelCandidate objects
     '''
     if 'normalized_height' not in G.graph:
         raise ValueError("Call normalize_positions(G) before compute_label_candidates().")
@@ -143,10 +260,11 @@ def compute_label_candidates(
 
     # Measure label in mm, convert to graph units
     font_size = compute_suggested_font_size(G)
-    ink_w_mm, ink_h_mm = measure_ink_mm(label_text, font_size)
+    ink_w_mm, ink_h_mm, scale = measure_ink_mm(label_text, font_size, desired_height)
 
     # padding
-    padding = ink_h_mm * 0.75
+    rows = len(label_text.split(r'\\[-2pt]'))
+    padding = (ink_h_mm / rows - 0.1 * rows) * 0.75
 
     # Inner half-extents (ink only, no padding)
     half_iw = (ink_w_mm  * units_per_mm) / 2.0
@@ -226,7 +344,7 @@ def compute_label_candidates(
 
         candidates[node] = node_candidates
 
-    return candidates
+    return scale, candidates
 
 @dataclass
 class OverflowLabel:
@@ -245,11 +363,12 @@ class OverflowLabel:
     text: str = ''
 
 def compute_overflow_label(
-    G: nx.Graph,
-    node: int,
-    label_text: str,
-    label_type: str
-) -> OverflowLabel:
+        G: nx.Graph,
+        node: int,
+        label_text: str,
+        label_type: str,
+        desired_height: float
+    ) -> OverflowLabel:
     '''
     Creates a centered overflow label for a specific node.
     bbox_corners        — tight bbox (tight_padding_mm), used for collision
@@ -263,12 +382,13 @@ def compute_overflow_label(
     units_per_mm = 1.0 / mm_per_unit
 
     font_size = compute_suggested_font_size(G)
-    ink_w_mm, ink_h_mm = measure_ink_mm(label_text, font_size)
+    ink_w_mm, ink_h_mm, _ = measure_ink_mm(label_text, font_size, desired_height)
 
     # padding
     corner_multiplier = 1 / np.sqrt(2)
     s = (1.0 / corner_multiplier)
-    padding = ink_h_mm * 0.75
+    rows = len(label_text.split(r'\\[-2pt]'))
+    padding = (ink_h_mm / rows - 0.1 * rows) * 0.75
 
     # Ink only
     half_iw = (ink_w_mm * units_per_mm) / 2.0

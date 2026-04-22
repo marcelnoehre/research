@@ -8,6 +8,7 @@ dependencies = [
     "fca-utils",
     "numpy>=2.4.3",
     "shapely>=2.1.2",
+    "texsoup>=0.3.3",
 ]
 
 [tool.uv.sources]

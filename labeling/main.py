@@ -92,37 +92,44 @@ label_config = {
 }
 label_candidates = {}
 label_texts = {}
+label_scale = {}
+
+_, desired_height, _ = measure_ink_mm('Calibrate', FONT_SIZE, -1.0)
 
 for node_id in lattice.nodes:
     per_node = []
 
     if label_config['general']:
-        general_txt = wrap_label_text(f'Concept {node_id}', formatter=str)
+        general_txt = wrap_label_text(f'Concept {node_id}', 'general', formatter=str)
         label_texts[(node_id, 'general')] = general_txt
 
     if label_config['extent']:
         objects = sorted(str(g) for g in lattice.lattice.get_concept_new_extent(node_id))
-        extent_txt = wrap_label_text(', '.join(objects), formatter=str)
+        extent_txt = wrap_label_text(', '.join(objects), 'extent', formatter=str)
         if extent_txt:
             label_texts[(node_id, 'extent')] = extent_txt
 
     if label_config['intent']:
         attributes = sorted(str(m) for m in lattice.lattice.get_concept_new_intent(node_id))
-        intent_txt = wrap_label_text(', '.join(attributes), formatter=str)
+        intent_txt = wrap_label_text(', '.join(attributes), 'intent', formatter=str)
         if intent_txt:
             label_texts[(node_id, 'intent')] = intent_txt
 
     for label_type, is_active in label_config.items():
         if not is_active or not label_texts.get((node_id, label_type)):
             continue
-        per_node += compute_label_candidates(G, [node_id], label_texts[(node_id, label_type)],
-                        label_type)[node_id]
+        scale, scaled_cands = compute_label_candidates(G, [node_id], label_texts[(node_id, label_type)],
+                        label_type, desired_height)
+        
+        per_node += scaled_cands[node_id]
+        label_scale[(node_id, label_type)] = scale
 
     label_candidates[node_id] = per_node
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
     output_path="figs/general_label_candidates.pdf",
+    label_scale=label_scale,
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
@@ -143,6 +150,7 @@ label_candidates = restrict_outer_node_candidates(G, label_candidates, outer_nod
 plot_lattice(
     G, cxt, lattice.nodes, coords,
     output_path="figs/filtered_outer.pdf",
+    label_scale=label_scale,
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
@@ -161,6 +169,7 @@ label_candidates = filter_candidates_by_nodes(G, label_candidates, lattice.nodes
 plot_lattice(
     G, cxt, lattice.nodes, coords,
     output_path="figs/filter_unclear.pdf",
+    label_scale=label_scale,
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
@@ -179,6 +188,7 @@ label_candidates = filter_candidates_by_edges(G, label_candidates, bounded_faces
 plot_lattice(
     G, cxt, lattice.nodes, coords,
     output_path="figs/filtered_ink_edges.pdf",
+    label_scale=label_scale,
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
@@ -197,6 +207,7 @@ label_candidates = filter_candidates_by_neighbor_direction(G, label_candidates, 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
     output_path="figs/filtered_neighbor.pdf",
+    label_scale=label_scale,
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
@@ -215,6 +226,7 @@ label_candidates, _ = hybrid_label_placement(label_candidates, True)
 plot_lattice(
     G, cxt, lattice.nodes, coords,
     output_path="figs/hybrid.pdf",
+    label_scale=label_scale,
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
@@ -233,6 +245,8 @@ label_candidates = filter_optimal_space(G, label_candidates, bounded_faces, oute
 plot_lattice(
     G, cxt, lattice.nodes, coords,
     output_path="figs/optimize_gaps.pdf",
+    show_vertex_ids=True,
+    label_scale=label_scale,
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
@@ -250,14 +264,16 @@ overflow_candidates = {}
 for node_id in lattice.nodes:
     if not label_candidates[node_id]:
         for type in types:
+            print(node_id, type, label_texts.get((node_id, type), ''))
             if label_texts.get((node_id, type), ''):
-                overflow_candidates[node_id] = compute_overflow_label(G, node_id, label_texts.get((node_id, type), ''), label_type=type)
+                overflow_candidates[len(overflow_candidates)] = compute_overflow_label(G, node_id, label_texts.get((node_id, type), ''), label_type=type, desired_height=desired_height)
 
 skipping_inner = len(overflow_candidates) >= len(outer_nodes)
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
     output_path="figs/overflow_candidates.pdf",
+    label_scale=label_scale,
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
@@ -279,6 +295,7 @@ if not skipping_inner:
     plot_lattice(
         G, cxt, lattice.nodes, coords,
         output_path="figs/inner_overflow_candidates.pdf",
+        label_scale=label_scale,
         intersections=intersection_points,
         cycles=bounded_faces,
         areas=areas,
@@ -295,8 +312,8 @@ if not skipping_inner:
 # Outer Overflow Labels
 ################################################################################
 unbounded_overflow_labels = [
-    ol.node_id
-    for ol in overflow_candidates.values()
+    lid
+    for lid, ol in overflow_candidates.items()
     if ol.anchor == 'overflow'
 ]
 all_overflow_candidates, overflow_candidates = outer_overflow_labels(G, label_candidates, overflow_candidates, outer_nodes)
@@ -305,6 +322,7 @@ all_overflow_candidates, overflow_candidates = outer_overflow_labels(G, label_ca
 # plot_lattice(
 #     G, cxt, lattice.nodes, coords,
 #     output_path="figs/all_outer_overflow_candidates.pdf",
+#     label_scale=label_scale,
 #     intersections=intersection_points,
 #     cycles=bounded_faces,
 #     areas=areas,
@@ -320,6 +338,7 @@ all_overflow_candidates, overflow_candidates = outer_overflow_labels(G, label_ca
 plot_lattice(
     G, cxt, lattice.nodes, coords,
     output_path="figs/outer_overflow_candidates.pdf",
+    label_scale=label_scale,
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
@@ -340,6 +359,7 @@ overflow_candidates = adjust_anchors(G, label_candidates, overflow_candidates, u
 plot_lattice(
     G, cxt, lattice.nodes, coords,
     output_path="figs/adjust_anchors.pdf",
+    label_scale=label_scale,
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
@@ -365,6 +385,7 @@ overflow_candidates = optimize_overflow_labels(G, label_candidates, overflow_can
 plot_lattice(
     G, cxt, lattice.nodes, coords,
     output_path="figs/force_refinement.pdf",
+    label_scale=label_scale,
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,
@@ -383,6 +404,7 @@ plot_lattice(
 plot_lattice(
     G, cxt, lattice.nodes, coords,
     output_path=f"figs/{FILE}.pdf",
+    label_scale=label_scale,
     intersections=intersection_points,
     cycles=bounded_faces,
     areas=areas,

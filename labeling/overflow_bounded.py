@@ -343,7 +343,8 @@ def update_overflow_label_position(label: OverflowLabel, cx: float, cy: float, a
     is_right  = 'right' in anchor
 
     corner_multiplier = 1 / np.sqrt(2)
-    padding = half_ih
+    rows = len(label.text.split(r'\\[-2pt]'))
+    padding = ((itl[1] - ibl[1]) / rows - 0.1 * rows) * 0.75
 
     p_top    = (padding * corner_multiplier) if is_top else padding
     p_bottom = (padding * corner_multiplier) if is_bottom else padding

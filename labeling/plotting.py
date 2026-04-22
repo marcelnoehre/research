@@ -68,24 +68,32 @@ def _draw_candidate(
         }[candidate.anchor]
         ax.scatter(*anchor_pt, color=colour, s=30, zorder=10, alpha=0.9, clip_on=False)
 
-    else:
-        padding = 0.1
-        ax.add_patch(mpatches.Polygon(
-            [
-                (ibl[0] - padding, ibl[1] - padding), # Bottom Left
-                (ibr[0] + padding, ibr[1] - padding), # Bottom Right
-                (itr[0] + padding, itr[1] + padding), # Top Right
-                (itl[0] - padding, itl[1] + padding)  # Top Left
-            ], closed=True, 
-            facecolor='white', edgecolor='grey',
-            alpha=0.30, linestyle='-', linewidth=0.5,
-            zorder=3, clip_on=False
-        ))
+    # else:
+    #     padding = 0.1
+    #     ax.add_patch(mpatches.Polygon(
+    #         [
+    #             (ibl[0] - padding, ibl[1] - padding), # Bottom Left
+    #             (ibr[0] + padding, ibr[1] - padding), # Bottom Right
+    #             (itr[0] + padding, itr[1] + padding), # Top Right
+    #             (itl[0] - padding, itl[1] + padding)  # Top Left
+    #         ], closed=True, 
+    #         facecolor='white', edgecolor='grey',
+    #         alpha=0.30, linestyle='-', linewidth=0.5,
+    #         zorder=3, clip_on=False
+    #     ))
 
     text_color = colour if colored_label_candidates else 'black'
     cx, cy = candidate.center
+    
+    rows = len(label_text.split(r'\\[-2pt]'))
+    translate_x = 0.0
+    if '\mathit' in label_text:
+        translate_x = -0.025 if 'left' in candidate.anchor else 0.025
+    translate_y = 0.025 if ('\mathit' in label_text and candidate.anchor != 'bottom') else 0.0
+    translate_y *= rows
+
     return ax.text(
-        cx, cy, label_text,
+        cx+translate_x, cy-translate_y, label_text,
         ha='center', va='center',
         fontsize=fontsize_pt,
         color=text_color,
@@ -141,18 +149,18 @@ def _draw_overflow_candidate(
             alpha=0.55, linestyle=':', linewidth=1.0,
             zorder=3, clip_on=False
         ))
-    else:
-        ax.add_patch(mpatches.Polygon(
-            [
-                (bl[0] - 0.05, bl[1]), # Bottom Left
-                (br[0] + 0.05, br[1]), # Bottom Right
-                (tr[0] + 0.05, tr[1]), # Top Right
-                (tl[0] - 0.05, tl[1])  # Top Left
-            ], closed=True, 
-            facecolor='white', edgecolor='grey',
-            alpha=0.30, linestyle='-', linewidth=0.5,
-            zorder=3, clip_on=False
-        ))
+    # else:
+    #     ax.add_patch(mpatches.Polygon(
+    #         [
+    #             (bl[0] - 0.05, bl[1]), # Bottom Left
+    #             (br[0] + 0.05, br[1]), # Bottom Right
+    #             (tr[0] + 0.05, tr[1]), # Top Right
+    #             (tl[0] - 0.05, tl[1])  # Top Left
+    #         ], closed=True, 
+    #         facecolor='white', edgecolor='grey',
+    #         alpha=0.30, linestyle='-', linewidth=0.5,
+    #         zorder=3, clip_on=False
+    #     ))
 
     if candidate.anchor != 'overflow':
         ax.scatter(*anchor_pt, color='grey', s=5, zorder=6, alpha=0.8, clip_on=False)
@@ -162,8 +170,15 @@ def _draw_overflow_candidate(
     text_color = colour if colored_label_candidates else 'black'
     cx, cy = candidate.center
 
+    rows = len(label_text.split(r'\\[-2pt]'))
+    translate_x = 0.0
+    if '\mathit' in label_text:
+        translate_x = -0.025 if 'left' in candidate.anchor else 0.025
+    translate_y = 0.025 if ('\mathit' in label_text) else 0.0
+    translate_y *= rows
+
     return ax.text(
-        cx, cy, label_text,
+        cx+translate_x, cy-translate_y, label_text,
         ha='center', va='center',
         fontsize=fontsize_pt,
         color=text_color,
@@ -178,6 +193,7 @@ def plot_lattice(
         concepts: List[int],
         coordinates: Dict,
         output_path: str = "labeling.pdf",
+        label_scale: Dict = {},
         title: str = '',
         show_vertex_ids: bool  = False,
         # intersections
@@ -278,7 +294,7 @@ def plot_lattice(
             for candidate in candidates:
                 text = label_texts.get((node_id, candidate.label_type))
                 if text is not None:
-                    txt = _draw_candidate(ax, candidate, text, FONT_SIZE, colored_label_candidates)
+                    txt = _draw_candidate(ax, candidate, text, label_scale[(node_id, candidate.label_type)], colored_label_candidates)
                     # only measure ink box for chosen labels
                     text_colour_pairs.append((txt, _ANCHOR_COLOURS[candidate.anchor]))
 
@@ -295,7 +311,7 @@ def plot_lattice(
     if show_overflow_labels and overflow_labels and label_texts:
         for overflow_label in overflow_labels.values():
             text = overflow_label.text
-            txt = _draw_overflow_candidate(G, ax, overflow_label, text, FONT_SIZE, colored_label_candidates)
+            txt = _draw_overflow_candidate(G, ax, overflow_label, text, label_scale[(overflow_label.node_id, overflow_label.label_type)], colored_label_candidates)
             text_colour_pairs.append((txt, '#17becf')) # tab:cyan for overflow
 
     # 1. Get the range of the nodes only

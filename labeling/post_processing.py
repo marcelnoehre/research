@@ -9,8 +9,8 @@ from shapely import LineString, Point, Polygon
 from label import LabelCandidate, OverflowLabel
 from overflow_bounded import _anchor_points, _label_wh, update_overflow_label_position
 
-def _distance_to_drawing(node_id, overflow_candidates, outer_boundary):
-        ol = overflow_candidates[node_id]
+def _distance_to_drawing(label_id, overflow_candidates, outer_boundary):
+        ol = overflow_candidates[label_id]
         ax, ay = _get_anchor_pt(ol)
         return Point(ax, ay).distance(outer_boundary)
 

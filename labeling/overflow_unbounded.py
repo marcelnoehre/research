@@ -31,7 +31,6 @@ from overflow_bounded import (
     _label_wh,
     _label_wh_expanded,
     _label_bbox_polygon,
-    _anchor_points,
     update_overflow_label_position,
     binding_line_valid,
 )
@@ -62,7 +61,7 @@ ITERATIVE_HUNGARIAN_MAX_ITERS = 50
 ITER_PENALTY_MULTIPLIER       = 2.0
 
 def _generate_candidates_task(args: dict) -> tuple[int, list[dict]]:
-    node_id = args["node_id"]
+    label_id = args["own_label_id"]
     cands = _generate_candidates(
         centroid            = args["centroid"],
         outer_polygon       = args["outer_polygon"],
@@ -76,7 +75,7 @@ def _generate_candidates_task(args: dict) -> tuple[int, list[dict]]:
         label_candidates    = args["label_candidates"],
         top_k               = args["top_k"],
     )
-    return node_id, cands
+    return label_id, cands
 
 # ── helpers (unchanged from original) ───────────────────────────────────────
 
@@ -93,10 +92,10 @@ def _angular_gap_between(a1: float, a2: float) -> float:
     return (a2 - a1) % (2 * math.pi)
 
 
-def _sort_by_node_angle(assigned, gap, centroid, G, overflow_candidates):
+def _sort_by_node_angle(assigned, gap, centroid, G):
     a_left = gap['a_left']
     def key(node_id):
-        pos = G.nodes[overflow_candidates[node_id].node_id]['pos']
+        pos = G.nodes[node_id]['pos']
         return _angular_gap_between(a_left, _angle_from_centroid(centroid, pos))
     return sorted(assigned, key=key)
 
@@ -552,15 +551,15 @@ def outer_overflow_labels(
         })
 
     # assign unplaced overflow labels to their natural gap
-    unplaced = {nid: ol for nid, ol in overflow_candidates.items() if ol.anchor == 'overflow'}
-    for node_id, ol in unplaced.items():
+    unplaced = {lid: ol for lid, ol in overflow_candidates.items() if ol.anchor == 'overflow'}
+    for label_id, ol in unplaced.items():
         outward_angle = _angle_from_centroid(centroid, ol.center)
         best_gap = max(
             (g for g in gaps if _angular_gap_between(g["a_left"], outward_angle) <= g["gap_size"]),
             key=lambda g: g["gap_size"],
             default=max(gaps, key=lambda g: g["gap_size"]),
         )
-        best_gap["assigned"].append(node_id)
+        best_gap["assigned"].append(ol.node_id)
 
     # ── Phase 1: generate candidates per gap ─────────────────────────────────
     all_candidates: Dict[int, List[dict]] = {}
@@ -569,33 +568,37 @@ def outer_overflow_labels(
     for gap in gaps:
         if not gap["assigned"]:
             continue
-        assigned = _sort_by_node_angle(
-            gap["assigned"], gap, centroid, G, overflow_candidates
-        )
+        print(gap["assigned"])
+        assigned = _sort_by_node_angle(gap["assigned"], gap, centroid, G)
         for node_id in assigned:
-            ol = overflow_candidates[node_id]
-            node_pos = G.nodes[ol.node_id]["pos"]
-            tasks.append({
-                "node_id":            node_id,
-                "centroid":           centroid,
-                "outer_polygon":      outer_polygon,
-                "placed_union":       placed_union,
-                "label":              ol,
-                "node_pos":           node_pos,
-                "own_node_id":        ol.node_id,
-                "own_label_id":       node_id,
-                "G":                  G,
-                "overflow_candidates": overflow_candidates,
-                "label_candidates":   label_candidates,
-                "top_k":              OUTER_CANDIDATE_POOL,
-            })
+            matches = [
+                (l_id, ol) for l_id, ol in overflow_candidates.items() 
+                if ol.node_id == node_id
+            ]
+            matches.sort(key=lambda x: x[0])
+            for label_id, ol in matches:
+                node_pos = G.nodes[ol.node_id]["pos"]
+                tasks.append({
+                    "node_id":            node_id,
+                    "centroid":           centroid,
+                    "outer_polygon":      outer_polygon,
+                    "placed_union":       placed_union,
+                    "label":              ol,
+                    "node_pos":           node_pos,
+                    "own_node_id":        ol.node_id,
+                    "own_label_id":       label_id,
+                    "G":                  G,
+                    "overflow_candidates": overflow_candidates,
+                    "label_candidates":   label_candidates,
+                    "top_k":              OUTER_CANDIDATE_POOL,
+                })
     
     with ThreadPoolExecutor() as pool:
         results = pool.map(_generate_candidates_task, tasks)
-        for node_id, cands in results:
-            all_candidates[node_id] = cands
+        for label_id, cands in results:
+            all_candidates[label_id] = cands
             if not cands:
-                print(f"Warning: no candidates generated for label {node_id}")
+                print(f"Warning: no candidates generated for label {label_id}")
 
     # ── Phase 2: global assignment ────────────────────────────────────────────
     label_ids  = sorted(all_candidates.keys())
