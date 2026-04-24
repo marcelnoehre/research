@@ -4,6 +4,7 @@ import matplotlib.cm as cm
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import networkx as nx
+import numpy as np
 
 from typing import Dict, List, Tuple
 from fcapy.context import FormalContext
@@ -23,6 +24,96 @@ _ANCHOR_COLOURS = {
     'left':         '#e377c2',   # tab:pink
     'right':        '#7f7f7f',   # tab:gray
 }
+
+
+# ---------------------------------------------------------------------------
+# Inline whitespace trimmer
+# ---------------------------------------------------------------------------
+
+def _trim_figure(fig, ax, padding_inches: float = 0.05, white_threshold: int = 250) -> None:
+    """
+    Trim whitespace around drawn content directly on *fig* / *ax* by:
+      1. Rasterising the figure to an RGBA array (no file I/O).
+      2. Finding the bounding box of all non-white pixels.
+      3. Resizing the figure and shifting the axes so only that region is kept.
+
+    This preserves every coloured pixel and does NOT use tight_layout or
+    bbox_inches='tight', so your data-coordinate geometry is untouched.
+
+    Parameters
+    ----------
+    fig             : the Figure to trim in-place
+    ax              : the Axes that owns the content (used to reposition)
+    padding_inches  : whitespace margin to leave around detected content
+    white_threshold : RGB value (0–255) below which a pixel counts as content;
+                      raise to also strip light-grey margins
+    """
+    # --- 1. Rasterise to RGBA numpy array --------------------------------
+    fig.canvas.draw()
+    buf = fig.canvas.buffer_rgba()
+    # shape: (height_px, width_px, 4)
+    rgba = np.frombuffer(buf, dtype=np.uint8).reshape(
+        fig.canvas.get_width_height()[::-1] + (4,)
+    )
+    rgb = rgba[:, :, :3]  # drop alpha
+
+    # --- 2. Find bounding box of non-white pixels ------------------------
+    # A pixel is "background" when all R, G, B >= white_threshold
+    is_content = np.any(rgb < white_threshold, axis=2)  # bool (H, W)
+
+    rows = np.any(is_content, axis=1)   # True for each row that has content
+    cols = np.any(is_content, axis=0)   # True for each col that has content
+
+    if not rows.any():
+        return  # nothing to trim
+
+    row_min, row_max = np.where(rows)[0][[0, -1]]
+    col_min, col_max = np.where(cols)[0][[0, -1]]
+
+    # --- 3. Convert pixel bbox → inches ----------------------------------
+    dpi = fig.get_dpi()
+    fig_w_px, fig_h_px = fig.canvas.get_width_height()
+
+    pad_px = int(round(padding_inches * dpi))
+
+    # clamp
+    col_min = max(0,        col_min - pad_px)
+    col_max = min(fig_w_px, col_max + pad_px)
+    row_min = max(0,        row_min - pad_px)
+    row_max = min(fig_h_px, row_max + pad_px)
+
+    new_w_in = (col_max - col_min) / dpi
+    new_h_in = (row_max - row_min) / dpi
+
+    # --- 4. Work out where the axes sits in figure-fraction space --------
+    # We want the axes position to remain the same *in data coordinates*
+    # but shift within the new, smaller figure canvas.
+
+    # Current axes position in figure pixels (origin = bottom-left of figure)
+    ax_pos = ax.get_position()          # fraction coords, bottom-left origin
+    ax_l_px = ax_pos.x0 * fig_w_px
+    ax_b_px = ax_pos.y0 * fig_h_px
+    ax_w_px = ax_pos.width  * fig_w_px
+    ax_h_px = ax_pos.height * fig_h_px
+
+    # row_min/max are top-left origin → convert to bottom-left origin for y
+    crop_b_px = fig_h_px - row_max   # distance from bottom of figure to crop bottom
+    crop_l_px = col_min
+
+    # New axes position within the cropped figure (fraction of new size)
+    new_ax_l = (ax_l_px - crop_l_px) / (col_max - col_min)
+    new_ax_b = (ax_b_px - crop_b_px) / (row_max - row_min)
+    new_ax_w = ax_w_px / (col_max - col_min)
+    new_ax_h = ax_h_px / (row_max - row_min)
+
+    # --- 5. Apply --------------------------------------------------------
+    fig.set_size_inches(new_w_in, new_h_in)
+    ax.set_position([new_ax_l, new_ax_b, new_ax_w, new_ax_h])
+
+
+# ---------------------------------------------------------------------------
+# Drawing helpers (unchanged)
+# ---------------------------------------------------------------------------
 
 def _draw_candidate(
         ax,
@@ -166,8 +257,8 @@ def _draw_overflow_candidate(
 
     if candidate.anchor != 'overflow':
         ax.scatter(*anchor_pt, color='grey', s=5, zorder=6, alpha=0.8, clip_on=False)
-        nx, ny = G.nodes[candidate.node_id]['pos']
-        ax.plot([anchor_pt[0], nx], [anchor_pt[1], ny], color='grey', linestyle='--', linewidth=0.5, alpha=0.4, zorder=4, clip_on=False)
+        nx_, ny = G.nodes[candidate.node_id]['pos']
+        ax.plot([anchor_pt[0], nx_], [anchor_pt[1], ny], color='grey', linestyle='--', linewidth=0.5, alpha=0.4, zorder=4, clip_on=False)
 
     text_color = colour if colored_label_candidates else 'black'
     cx, cy = candidate.center
@@ -188,6 +279,11 @@ def _draw_overflow_candidate(
         alpha=1.0,
         zorder=7,
     )
+
+
+# ---------------------------------------------------------------------------
+# Main plotting function
+# ---------------------------------------------------------------------------
 
 def plot_lattice(
         G: nx.Graph,
@@ -213,14 +309,20 @@ def plot_lattice(
         colored_label_candidates: bool = False,
         show_legend: bool = False,
         overflow_labels: Dict = {},
-        show_overflow_labels: bool = False
+        show_overflow_labels: bool = False,
+        # trimming
+        trim_whitespace: bool = True,
+        trim_padding_inches: float = 0.05,
+        trim_white_threshold: int = 250,
 ) -> None:
     '''
     Draw the lattice diagram and save to a PDF.
 
     Parameters
     ----------
-    TODO: Description of parameters
+    trim_whitespace      : crop excess white margins before saving (default True)
+    trim_padding_inches  : whitespace to keep around detected content
+    trim_white_threshold : pixels with all channels >= this are treated as background
     '''
     NODE_SIZE = 50
     LINE_WIDTH = 1.0
@@ -327,10 +429,21 @@ def plot_lattice(
     # 3. LOCK the aspect ratio and limits
     ax.set_aspect('equal', adjustable='datalim')
     ax.axis('off')
+
+    # ── Trim whitespace (pixel-based, no tight_layout) ──────────────────
+    if trim_whitespace:
+        _trim_figure(fig, ax,
+                     padding_inches=trim_padding_inches,
+                     white_threshold=trim_white_threshold)
+
     plt.savefig(output_path, format="pdf")
     plt.close('all')
     plt.close(fig)
 
+
+# ---------------------------------------------------------------------------
+# Dynamic candidate helper (used in __main__)
+# ---------------------------------------------------------------------------
 
 def _draw_dynamic_candidate(ax, anchor_type, text, pos_coord, fontsize_pt, alpha, renderer=None):
     is_top    = 'top' in anchor_type
@@ -412,37 +525,21 @@ if __name__ == "__main__":
 
     side_anchors = [('left', 'L'), ('right', 'R'), ('top', 'T'), ('bottom', 'B')]
     corner_anchors = [('top_left', 'TL'), ('top_right', 'TR'), ('bottom_left', 'BL'), ('bottom_right', 'BR')]
-    units_per_mm = 1.0
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.set_xlim(-0.1, 0.1)
-    ax.set_ylim(-0.1, 0.1)
+    for anchors, fname in [(side_anchors, 'figs/anchors_side.pdf'), (corner_anchors, 'figs/anchors_corner.pdf')]:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.set_xlim(-0.1, 0.1)
+        ax.set_ylim(-0.1, 0.1)
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
 
-    # Draw the figure once to initialize the renderer
-    fig.canvas.draw()
-    renderer = fig.canvas.get_renderer()
-    
-    for anchor, text in side_anchors:
-        _draw_dynamic_candidate(ax, anchor, text, pos, 12.0, 0.7, renderer=renderer)
-    
-    ax.axis('off')
+        for anchor, text in anchors:
+            _draw_dynamic_candidate(ax, anchor, text, pos, 12.0, 0.7, renderer=renderer)
 
-    plt.tight_layout()
-    plt.savefig('figs/anchors_side.pdf', format="pdf", bbox_inches='tight')
-    plt.close('all')
+        ax.axis('off')
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.set_xlim(-0.1, 0.1)
-    ax.set_ylim(-0.1, 0.1)
+        # Trim instead of tight_layout — geometry-safe
+        _trim_figure(fig, ax, padding_inches=0.05)
 
-    fig.canvas.draw()
-    renderer = fig.canvas.get_renderer()
-
-    for anchor, text in corner_anchors:
-        _draw_dynamic_candidate(ax, anchor, text, pos, 12.0, 0.2, renderer=renderer)
-
-    ax.axis('off')
-
-    plt.tight_layout()
-    plt.savefig('figs/anchors_corner.pdf', format="pdf", bbox_inches='tight')
-    plt.close('all')
+        plt.savefig(fname, format="pdf")
+        plt.close('all')
