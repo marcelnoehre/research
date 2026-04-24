@@ -20,7 +20,8 @@ MAX_ROW_CHARS = 10
 K_ROWS = 2
 PHYSICAL_HEIGHT_MM = 100.0
 DPI = 150.0
-FONT_SIZE = 8.0
+FONT_SIZE = 0.0
+FONT = r'\small'
 _MATH_RE     = re.compile(r'(\$[^$]+\$)')
 _LATEX_CHARS = frozenset('\\{_^')
 
@@ -106,7 +107,7 @@ def wrap_label_text(
 
 def _format_row(row: str, label_type: str) -> str:
     if label_type != 'intent':
-        return rf'{{\small\textrm{{{row}}}}}'
+        return rf'{{{FONT}\textrm{{{row}}}}}'
  
     parts  = _MATH_RE.split(row)
     result = []
@@ -115,7 +116,7 @@ def _format_row(row: str, label_type: str) -> str:
             result.append(part[1:-1])          # strip delimiters; already math
         elif part.strip():
             result.append(rf'\textit{{{part}}}')
-    return rf'${{\small {"".join(result)}}}$'
+    return rf'${{{FONT} {"".join(result)}}}$'
 
 def _split_words(text: str) -> list[str]:
     """Split into words respecting LaTeX/math boundaries."""
@@ -271,11 +272,13 @@ def measure_ink_mm(text: str, fontsize_pt: float, desired_height: float) -> tupl
     bbox = t.get_window_extent(renderer)
     px_per_mm = DPI / 25.4
     initial_height_mm = bbox.height / px_per_mm
+    ax.axis('off')
     plt.close(fig)
 
     if desired_height < 0:
         return -1, initial_height_mm, -1
 
+    # TODO: remove -> size depends soly on latex identifier
     # 2. Calculate the scale
     # Ratio of how much bigger/smaller the font needs to be
     rows = len(text.split(r'\\[-1pt]'))

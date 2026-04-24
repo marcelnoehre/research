@@ -11,6 +11,8 @@ from fca.lattice import Lattice
 
 from label import *
 
+MARGIN = 1.0
+
 _ANCHOR_COLOURS = {
     'top_left':     '#d62728',   # tab:red
     'top_right':    '#1f77b4',   # tab:blue
@@ -319,9 +321,8 @@ def plot_lattice(
     ys = [G.nodes[n]['pos'][1] for n in G.nodes]
 
     # 2. Set the axes limits manually based on nodes + a fixed margin
-    margin = 1
-    ax.set_xlim(min(xs) - margin, max(xs) + margin)
-    ax.set_ylim(min(ys) - margin, max(ys) + margin)
+    ax.set_xlim(min(xs) - MARGIN, max(xs) + MARGIN)
+    ax.set_ylim(min(ys) - MARGIN, max(ys) + MARGIN)
 
     # 3. LOCK the aspect ratio and limits
     ax.set_aspect('equal', adjustable='datalim')

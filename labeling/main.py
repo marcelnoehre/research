@@ -16,7 +16,7 @@ from forces import *
 ################################################################################ 
 # Data
 ################################################################################
-FILE = 'living_beings_and_water_original'
+FILE = 'triangles'
 parser = Parser()
 cxt = parser.decode_cxt(f'../data/{FILE}.cxt')
 print(cxt.print_data())
@@ -86,9 +86,9 @@ plot_lattice(
 ################################################################################
 types = ['general', 'extent', 'intent']
 label_config = {
-    'general': False,
-    'extent':  True,
-    'intent':  True
+    'general': True,
+    'extent':  False,
+    'intent':  False
 }
 label_candidates = {}
 label_texts = {}
@@ -100,7 +100,7 @@ for node_id in lattice.nodes:
     per_node = []
 
     if label_config['general']:
-        general_txt = wrap_label_text(f'Concept {node_id}', 'general', formatter=str)
+        general_txt = wrap_label_text(f'Node {node_id}', 'general', formatter=str)
         label_texts[(node_id, 'general')] = general_txt
 
     if label_config['extent']:
@@ -319,21 +319,21 @@ unbounded_overflow_labels = [
 all_overflow_candidates, overflow_candidates = outer_overflow_labels(G, label_candidates, overflow_candidates, outer_nodes)
 
 # plot all unbounded overflow candidates
-# plot_lattice(
-#     G, cxt, lattice.nodes, coords,
-#     output_path="figs/all_outer_overflow_candidates.pdf",
-#     label_scale=label_scale,
-#     intersections=intersection_points,
-#     cycles=bounded_faces,
-#     areas=areas,
-#     centers=centers,
-#     label_candidates=label_candidates,
-#     label_texts=label_texts,
-#     show_label_candidates=True,
-#     colored_label_candidates=True,
-#     overflow_labels=all_overflow_candidates,
-#     show_overflow_labels=True
-# )
+plot_lattice(
+    G, cxt, lattice.nodes, coords,
+    output_path="figs/all_outer_overflow_candidates.pdf",
+    label_scale=label_scale,
+    intersections=intersection_points,
+    cycles=bounded_faces,
+    areas=areas,
+    centers=centers,
+    label_candidates=label_candidates,
+    label_texts=label_texts,
+    show_label_candidates=True,
+    colored_label_candidates=True,
+    overflow_labels=all_overflow_candidates,
+    show_overflow_labels=True
+)
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,

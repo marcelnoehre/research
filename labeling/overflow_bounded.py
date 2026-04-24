@@ -158,8 +158,8 @@ def binding_line_valid(
             continue
         
         # binder intersects with a node
-        # 0.1 = radius of plotted nodes
-        if line.distance(Point(data['pos'])) < 0.15:
+        # 0.15 = radius of plotted nodes
+        if line.distance(Point(data['pos'])) < 0.2:
             return False
         
     if max_edge_crossings >= 0:
@@ -521,7 +521,7 @@ def inner_overflow_labels(
 
     # subtract expanded bboxes of placed labels from each face
     placed_union = unary_union([
-        Polygon(cand.expanded_bbox_corners)
+        Polygon(cand.bbox_corners)
         for candidates in label_candidates.values()
         for cand in candidates
     ])

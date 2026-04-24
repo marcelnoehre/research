@@ -34,22 +34,20 @@ from overflow_bounded import (
     update_overflow_label_position,
     binding_line_valid,
 )
+from post_processing import _get_anchor_pt
 
 # ── tunables ────────────────────────────────────────────────────────────────
-OUTER_STEP          = 0.5
-OUTER_MAX_STEPS     = 50
-WEDGE_RADIUS        = 1e4
+OUTER_STEP          = 0.25
 OUTER_CANDIDATE_POOL = 100   # top-K candidates kept per label after phase 1
-CANDIDATES_PER_RAY = 2
-RAYS = 180
-MAX_LABEL_DIST      = 2.0
+MIN_LABEL_DIST = 1.0
+MAX_LABEL_DIST      = 3.0
 
 # cost weights
 W_ALIGN         = 1.0   # anchor alignment
 W_ANGLE         = 0.5   # natural angle
 W_BOUNDARY      = 3.0   # close to polygon boundary
 W_BINDER        = 10.0   # length of binding line
-W_BINDER_INTERSECT = 50.0 # penalty for binder intersecting another label
+W_BINDER_INTERSECT = 100.0 # penalty for binder intersecting another label
 W_BINDER_CROSS  = 8.0   # penalty for crossing binding lines
 W_TIGHT_OVERLAP = 80.0  # penalty for ink overlaps 
 W_OVERLAP       = 10.0  # penalty for padding overlaps
@@ -66,6 +64,7 @@ def _generate_candidates_task(args: dict) -> tuple[int, list[dict]]:
         centroid            = args["centroid"],
         outer_polygon       = args["outer_polygon"],
         placed_union        = args["placed_union"],
+        placed_overflow     = args["placed_overflow"],
         label               = args["label"],
         node_pos            = args["node_pos"],
         own_node_id         = args["own_node_id"],
@@ -104,7 +103,7 @@ OUTER_MARGIN = 0.5
 GRID_STEP = 0.5
 
 def _generate_candidates(
-    centroid, outer_polygon, placed_union,
+    centroid, outer_polygon, placed_union, placed_overflow,
     label: OverflowLabel, node_pos, own_node_id,
     own_label_id, G, overflow_candidates,
     label_candidates, top_k=OUTER_CANDIDATE_POOL
@@ -150,6 +149,18 @@ def _generate_candidates(
     poly_bounds = outer_polygon.bounds
     poly_ext    = outer_polygon.exterior
 
+    placed = []
+    for poi, pol in placed_overflow.items():
+        anchor_pt = _get_anchor_pt(pol)
+        placed.append({
+            'label_id':     poi,
+            'face_id':      -1,
+            'position':     pol.center,
+            'anchor':       pol.anchor,
+            'anchor_pt':    anchor_pt,
+            'binding_line': LineString([anchor_pt, node_pos]),
+        })
+
     # ── build grid ───────────────────────────────────────────────────────────
     margin = max(ew, eh) + OUTER_MARGIN
     gx0 = poly_bounds[0] - margin
@@ -182,7 +193,7 @@ def _generate_candidates(
     dist2   = ((pts_3d - closest) ** 2).sum(axis=2)          # (N, M)
     min_dist = np.sqrt(dist2.min(axis=1))                     # (N,)
 
-    keep = min_dist <= MAX_LABEL_DIST
+    keep = (min_dist >= MIN_LABEL_DIST) & (min_dist <= MAX_LABEL_DIST)
 
     # ── pass 1: bulk AABB filter (pure numpy, no Shapely) ────────────────────
     # Expanded bbox corners for every cell.
@@ -248,9 +259,10 @@ def _generate_candidates(
 
             if own_ink.intersects(line):
                 continue
+
             if not binding_line_valid(
                 line, own_node_id, own_label_id,
-                G, [], overflow_candidates, label_candidates, soft=True
+                G, placed, overflow_candidates, label_candidates, soft=True
             ):
                 continue
 
@@ -474,6 +486,13 @@ def _conflict_cost(cand_a: dict, cand_b: dict) -> float:
     if cand_a['binder'].crosses(cand_b['binder']):
         cost += W_BINDER_CROSS
 
+    if Point(*cand_a['anchor_pt']).distance(cand_b['binder']) < 0.1:
+        cost += W_BINDER_INTERSECT
+    
+    
+    if Point(*cand_b['anchor_pt']).distance(cand_a['binder']) < 0.1:
+        cost += W_BINDER_INTERSECT
+
     return cost
 
 def _repair_overlaps(label_ids, candidates, assignment, max_passes=3):
@@ -552,6 +571,7 @@ def outer_overflow_labels(
 
     # assign unplaced overflow labels to their natural gap
     unplaced = {lid: ol for lid, ol in overflow_candidates.items() if ol.anchor == 'overflow'}
+    placed = {lid: ol for lid, ol in overflow_candidates.items() if ol.anchor != 'overflow'}
     for label_id, ol in unplaced.items():
         outward_angle = _angle_from_centroid(centroid, ol.center)
         best_gap = max(
@@ -583,6 +603,7 @@ def outer_overflow_labels(
                     "centroid":           centroid,
                     "outer_polygon":      outer_polygon,
                     "placed_union":       placed_union,
+                    "placed_overflow":    placed,
                     "label":              ol,
                     "node_pos":           node_pos,
                     "own_node_id":        ol.node_id,
