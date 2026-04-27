@@ -21,7 +21,7 @@ K_ROWS = 2
 PHYSICAL_HEIGHT_MM = 100.0
 DPI = 150.0
 FONT_SIZE = 0.0
-FONT = r'\small'
+FONT = r'\footnotesize'
 _MATH_RE     = re.compile(r'(\$[^$]+\$)')
 _LATEX_CHARS = frozenset('\\{_^')
 
@@ -113,10 +113,10 @@ def _format_row(row: str, label_type: str) -> str:
     result = []
     for part in parts:
         if part.startswith('$') and part.endswith('$'):
-            result.append(part[1:-1])          # strip delimiters; already math
+            result.append(part)          
         elif part.strip():
             result.append(rf'\textit{{{part}}}')
-    return rf'${{{FONT} {"".join(result)}}}$'
+    return rf'{{{FONT} {"".join(result)}}}'
 
 def _split_words(text: str) -> list[str]:
     """Split into words respecting LaTeX/math boundaries."""

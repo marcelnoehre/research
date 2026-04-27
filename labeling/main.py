@@ -16,7 +16,7 @@ from forces import *
 ################################################################################ 
 # Data
 ################################################################################
-FILE = 'triangles'
+FILE = 'car_original'
 parser = Parser()
 cxt = parser.decode_cxt(f'../data/{FILE}.cxt')
 print(cxt.print_data())
@@ -86,9 +86,9 @@ plot_lattice(
 ################################################################################
 types = ['general', 'extent', 'intent']
 label_config = {
-    'general': True,
-    'extent':  False,
-    'intent':  False
+    'general': False,
+    'extent':  True,
+    'intent':  True
 }
 label_candidates = {}
 label_texts = {}
@@ -244,8 +244,7 @@ label_candidates = filter_optimal_space(G, label_candidates, bounded_faces, oute
 
 plot_lattice(
     G, cxt, lattice.nodes, coords,
-    output_path="figs/optimize_gaps.pdf",
-    show_vertex_ids=True,
+    output_path="figs/optimize_space.pdf",
     label_scale=label_scale,
     intersections=intersection_points,
     cycles=bounded_faces,

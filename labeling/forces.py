@@ -45,6 +45,12 @@ def optimize_overflow_labels(
         for cands in label_candidates.values()
         for cand in cands
     ]
+
+    outer_circles = []
+    for onid in outer_nodes:
+        outer_pos = G.nodes[onid]['pos']
+        circle_radius = 0.15
+        outer_circles.append(Point(outer_pos).buffer(circle_radius))
     #####################
     # Optimization Loop #
     #####################
@@ -66,7 +72,7 @@ def optimize_overflow_labels(
             ################################################
             threshold = max(w, h)
 
-            for ink in ink_polys:
+            for ink in ink_polys + outer_circles:
                 p1, p2 = nearest_points(ink, bbox_poly)
                 dist_to_ink = np.linalg.norm(np.array([p2.x - p1.x, p2.y - p1.y]))
 
@@ -164,7 +170,7 @@ def optimize_overflow_labels(
                     mag = (binder_threshold - dist_binder) * W_BINDER_DODGE
                     force_vector += slide_dir * mag
 
-            for ink_poly in ink_polys:
+            for ink_poly in ink_polys + outer_circles:
                 _apply_binder_repulsion(ink_poly, ink_poly.centroid)
 
             for other_lid, other_ol in overflow_candidates.items():
