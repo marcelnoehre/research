@@ -417,8 +417,9 @@ def hybrid_label_placement(
             chosen_map[nid].append(cand)
             placed_entries.append((cand, fk))
 
-    if verbose:
-        for line in log: print(line)
-        print(f'Total labels placed: {len(placed_entries)}')
+    # if verbose:
+    #     continue
+        # for line in log: print(line)
+        #print(f'Total labels placed: {len(placed_entries)}')
 
     return chosen_map, log

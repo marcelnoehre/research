@@ -3,6 +3,8 @@ from fca.lattice import Lattice
 
 from config import Config
 from intersection import *
+from overflow_bounded import _label_bbox_polygon, _label_wh
+from post_processing import _get_anchor_pt
 from utils import *
 from topology import *
 from label import *
@@ -14,14 +16,24 @@ from overflow_unbounded import *
 from post_processing import *
 from forces import *
 
+import csv
+import time
+import statistics
+
 ################################################################################ 
 # Data
 ################################################################################
-VISUALIZE = True
+VISUALIZE = False
 cfg = Config()
 cfg.file = 'car_original'
+output_file = "results.csv"
+headers = ['top_k', 'grid_step', 'max_dist_to_drawing', 'hungarian_iterations', 'duration_cost', 'final_cost', 'duration_force', 'iterations_force', 'avg_dist_drawing', 'avg_min_dist_ol_obstacle', 'avg_min_dist_binder_obstacle']
 parser = Parser()
 cxt = parser.decode_cxt(f'../data/{cfg.file}.cxt')
+
+with open(output_file, mode="w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow(headers)
 #print(cxt.print_data())
 
 with open(f'../data/{cfg.file}.pos', 'r') as f:
@@ -329,106 +341,190 @@ unbounded_overflow_labels = [
     for lid, ol in overflow_candidates.items()
     if ol.anchor == 'overflow'
 ]
-all_overflow_candidates, overflow_candidates, _ = outer_overflow_labels(G, label_candidates, overflow_candidates, outer_nodes)
 
-# plot all unbounded overflow candidates
-if VISUALIZE:
-    plot_lattice(
-        G, cxt, lattice.nodes, coords,
-        output_path="figs/all_outer_overflow_candidates.pdf",
-        label_scale=label_scale,
-        intersections=intersection_points,
-        cycles=bounded_faces,
-        areas=areas,
-        centers=centers,
-        label_candidates=label_candidates,
-        label_texts=label_texts,
-        show_label_candidates=True,
-        colored_label_candidates=True,
-        overflow_labels=all_overflow_candidates,
-        show_overflow_labels=True
-    )
+TOP_Ks = list(range(50, 1050, 50))
+GRID_STEPS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+MIN_MAX_DISTS = [(1.0, 2.0), (1.0, 3.0), (1.0, 4.0), (1.0, 5.0), (1.0, 7.5), (1.0, 10.0)]
+ITERATIVE_HUNGARIAN_MAX_ITERATIONS = [1, 2, 5, 10, 25, 40, 55, 70, 85, 100, 125, 150, 175, 200]
+for tk in TOP_Ks:
+    cfg.OUTER_CANDIDATE_POOL = tk
+    for gs in GRID_STEPS:
+        cfg.GRID_STEP = gs
+        for min_dist, max_dist in MIN_MAX_DISTS:
+            for iter_amount in ITERATIVE_HUNGARIAN_MAX_ITERATIONS:
+                cfg.MIN_LABEL_DIST = min_dist
+                cfg.MAX_LABEL_DIST = max_dist
+                cfg.ITERATIVE_HUNGARIAN_MAX_ITERS = iter_amount
 
-    plot_lattice(
-        G, cxt, lattice.nodes, coords,
-        output_path="figs/outer_overflow_candidates.pdf",
-        label_scale=label_scale,
-        intersections=intersection_points,
-        cycles=bounded_faces,
-        areas=areas,
-        centers=centers,
-        label_candidates=label_candidates,
-        label_texts=label_texts,
-        show_label_candidates=True,
-        colored_label_candidates=True,
-        overflow_labels=overflow_candidates,
-        show_overflow_labels=True
-    )
+                start_time = time.perf_counter()
+                all_overflow_candidates, overflow_candidates, assignment = outer_overflow_labels(G, label_candidates, overflow_candidates, outer_nodes, cfg)
+                end_time = time.perf_counter()
+                duration_cost = end_time - start_time
 
-################################################################################
-################################################################################
-################################################################################
-overflow_candidates = adjust_anchors(G, label_candidates, overflow_candidates, unbounded_overflow_labels, outer_nodes)
+                final_cost = 0.0
+                for _, chosen in assignment.items():
+                    final_cost += chosen['cost']
 
-if VISUALIZE:
-    plot_lattice(
-        G, cxt, lattice.nodes, coords,
-        output_path="figs/adjust_anchors.pdf",
-        label_scale=label_scale,
-        intersections=intersection_points,
-        cycles=bounded_faces,
-        areas=areas,
-        centers=centers,
-        label_candidates=label_candidates,
-        label_texts=label_texts,
-        show_label_candidates=True,
-        colored_label_candidates=True,
-        overflow_labels=overflow_candidates,
-        show_overflow_labels=True
-    )
+                # plot all unbounded overflow candidates
+                if VISUALIZE:
+                    plot_lattice(
+                        G, cxt, lattice.nodes, coords,
+                        output_path="figs/all_outer_overflow_candidates.pdf",
+                        label_scale=label_scale,
+                        intersections=intersection_points,
+                        cycles=bounded_faces,
+                        areas=areas,
+                        centers=centers,
+                        label_candidates=label_candidates,
+                        label_texts=label_texts,
+                        show_label_candidates=True,
+                        colored_label_candidates=True,
+                        overflow_labels=all_overflow_candidates,
+                        show_overflow_labels=True
+                    )
 
-################################################################################
-################################################################################
-################################################################################
+                    plot_lattice(
+                        G, cxt, lattice.nodes, coords,
+                        output_path="figs/outer_overflow_candidates.pdf",
+                        label_scale=label_scale,
+                        intersections=intersection_points,
+                        cycles=bounded_faces,
+                        areas=areas,
+                        centers=centers,
+                        label_candidates=label_candidates,
+                        label_texts=label_texts,
+                        show_label_candidates=True,
+                        colored_label_candidates=True,
+                        overflow_labels=overflow_candidates,
+                        show_overflow_labels=True
+                    )
+
+                ################################################################################
+                ################################################################################
+                ################################################################################
+                overflow_candidates = adjust_anchors(G, label_candidates, overflow_candidates, unbounded_overflow_labels, outer_nodes)
+
+                if VISUALIZE:
+                    plot_lattice(
+                        G, cxt, lattice.nodes, coords,
+                        output_path="figs/adjust_anchors.pdf",
+                        label_scale=label_scale,
+                        intersections=intersection_points,
+                        cycles=bounded_faces,
+                        areas=areas,
+                        centers=centers,
+                        label_candidates=label_candidates,
+                        label_texts=label_texts,
+                        show_label_candidates=True,
+                        colored_label_candidates=True,
+                        overflow_labels=overflow_candidates,
+                        show_overflow_labels=True
+                    )
+
+                ################################################################################
+                ################################################################################
+                ################################################################################
 
 
-################################################################################
-# Force Based Refinement
-################################################################################
-overflow_candidates = optimize_overflow_labels(G, label_candidates, overflow_candidates, unbounded_overflow_labels, outer_nodes)
+                ################################################################################
+                # Force Based Refinement
+                ################################################################################
+                
+                start_time = time.perf_counter()
+                overflow_candidates, iters_converged = optimize_overflow_labels(G, label_candidates, overflow_candidates, unbounded_overflow_labels, outer_nodes)
+                end_time = time.perf_counter()
+                duration_force = end_time - start_time
 
-if VISUALIZE:
-    plot_lattice(
-        G, cxt, lattice.nodes, coords,
-        output_path="figs/force_refinement.pdf",
-        label_scale=label_scale,
-        intersections=intersection_points,
-        cycles=bounded_faces,
-        areas=areas,
-        centers=centers,
-        label_candidates=label_candidates,
-        label_texts=label_texts,
-        show_label_candidates=True,
-        colored_label_candidates=True,
-        overflow_labels=overflow_candidates,
-        show_overflow_labels=True
-    )
+                outer_polygon = Polygon([G.nodes[n]['pos'] for n in outer_nodes])
+                ink_polys = [
+                    Polygon(cand.inner_bbox_corners)
+                    for cands in label_candidates.values()
+                    for cand in cands
+                ]
+                outer_circles = []
+                for onid in outer_nodes:
+                    outer_pos = G.nodes[onid]['pos']
+                    circle_radius = 0.15
+                    outer_circles.append(Point(outer_pos).buffer(circle_radius))
 
-################################################################################
-# Final Drawing
-################################################################################
-if VISUALIZE:
-    plot_lattice(
-        G, cxt, lattice.nodes, coords,
-        output_path=f"figs/{cfg.file}.pdf",
-        label_scale=label_scale,
-        intersections=intersection_points,
-        cycles=bounded_faces,
-        areas=areas,
-        centers=centers,
-        label_candidates=label_candidates,
-        label_texts=label_texts,
-        show_label_candidates=True,
-        overflow_labels=overflow_candidates,
-        show_overflow_labels=True
-    )
+                # avg_dist_drawing
+                # avg_min_dist_ol_obstacle
+                dists_drawing = []
+                dists_obstacles = []
+                for lid, ol in overflow_candidates.items():
+                    _size = _label_wh(ol)
+                    ol_poly = _label_bbox_polygon(*ol.center, *_size)
+                    dists_drawing.append(outer_polygon.distance(ol_poly))
+
+                    # min distance to obstacles
+                    _dists = []
+                    for obstacle_poly in ink_polys + outer_circles:
+                        _dists.append(obstacle_poly.distance(ol_poly))
+                    dists_obstacles.append(min(_dists))
+                
+                # avg_min_dist_binder_obstacle
+                dists_binder = []
+                for lid, ol in overflow_candidates.items():
+                    anchor_pt = _get_anchor_pt(ol)
+                    lid_binder = LineString([anchor_pt, G.nodes[ol.node_id]['pos']])
+                    _dists = []
+                    for obstacle_poly in ink_polys + outer_circles:
+                        _dists.append(obstacle_poly.distance(lid_binder))
+                    dists_binder.append(min(_dists))
+
+                # top_k, grid_step, max_dist_to_drawing, hungarian_iterations, duration_cost, final_cost,
+                # duration_force, iterations_force, avg_dist_drawing, avg_min_dist_ol_obstacle, avg_min_dist_binder_obstacle
+                row_to_save = [
+                    cfg.OUTER_CANDIDATE_POOL, 
+                    cfg.GRID_STEP,
+                    cfg.MAX_LABEL_DIST,
+                    cfg.ITERATIVE_HUNGARIAN_MAX_ITERS,
+                    duration_cost,
+                    final_cost,
+                    duration_force,
+                    iters_converged,
+                    statistics.mean(dists_drawing),
+                    statistics.mean(dists_obstacles),
+                    statistics.mean(dists_binder)
+                ]
+
+                with open(output_file, mode="a", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(row_to_save)
+
+
+                if VISUALIZE:
+                    plot_lattice(
+                        G, cxt, lattice.nodes, coords,
+                        output_path="figs/force_refinement.pdf",
+                        label_scale=label_scale,
+                        intersections=intersection_points,
+                        cycles=bounded_faces,
+                        areas=areas,
+                        centers=centers,
+                        label_candidates=label_candidates,
+                        label_texts=label_texts,
+                        show_label_candidates=True,
+                        colored_label_candidates=True,
+                        overflow_labels=overflow_candidates,
+                        show_overflow_labels=True
+                    )
+
+                ################################################################################
+                # Final Drawing
+                ################################################################################
+                if VISUALIZE:
+                    plot_lattice(
+                        G, cxt, lattice.nodes, coords,
+                        output_path=f"figs/{cfg.file}.pdf",
+                        label_scale=label_scale,
+                        intersections=intersection_points,
+                        cycles=bounded_faces,
+                        areas=areas,
+                        centers=centers,
+                        label_candidates=label_candidates,
+                        label_texts=label_texts,
+                        show_label_candidates=True,
+                        overflow_labels=overflow_candidates,
+                        show_overflow_labels=True
+                    )

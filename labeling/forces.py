@@ -12,9 +12,9 @@ W_GLOBAL_PROXIMITY = 5.0  # Push away from other overflow labels (Tangential)
 W_SPRING = 1.0            # Pull toward node (Stronger to keep binders short)
 W_BINDER_DODGE = 5.0      # Push binder away from fixed labels
 W_HALF_PLANE = 5.0       # Keep labels in the correct half plane
-ITERATIONS = 100
+ITERATIONS = 10000
 STEP_SIZE = 0.1
-MIN_BINDER_LENGTH = 0.25      
+MIN_BINDER_LENGTH = 0.25
 
 def optimize_overflow_labels(
     G, 
@@ -218,7 +218,7 @@ def optimize_overflow_labels(
             dist_proposed = outer_polygon.distance(proposed_poly_tight)
             if dist_proposed < MIN_BINDER_LENGTH:
                 if dist_proposed < dist_current:
-                    print(lid, 'minimal binder length')
+                    #print(lid, 'minimal binder length')
                     valid = False
 
             # keep labels outside
@@ -226,22 +226,22 @@ def optimize_overflow_labels(
                 radial_dir = node_pos - drawing_centroid
                 label_dir = proposed_center - node_pos
                 if np.dot(radial_dir, label_dir) < -0.5:
-                    print(lid, 'keep labels outside')
+                    #print(lid, 'keep labels outside')
                     valid = False
 
             # prevent intersections with label candidates
             if valid:
                 if proposed_poly_tight.intersects(placed_union):
-                    print(lid, 'intersects placed union')
+                    #print(lid, 'intersects placed union')
                     valid = False
             if valid:
                 for ink in ink_polys:
                     if proposed_binder.intersects(ink):
-                        print(lid, 'binder intersects ink')
+                        #print(lid, 'binder intersects ink')
                         valid = False
             if valid:
                 if Point(proposed_anchor).intersects(placed_union):
-                    print(lid, 'anchor intersects placed union')
+                    #print(lid, 'anchor intersects placed union')
                     valid = False
         
             if valid:
@@ -255,11 +255,11 @@ def optimize_overflow_labels(
                     other_binder = LineString([other_anchor_pt, G.nodes[other_lid]['pos']])
 
                     if proposed_poly_tight.intersects(other_poly_tight):
-                        print(lid, 'intersects another overflow label')
+                        #print(lid, 'intersects another overflow label')
                         valid = False
                         break
                     if proposed_poly_tight.intersects(other_binder):
-                        print(lid, 'intersects another binder')
+                        #print(lid, 'intersects another binder')
                         valid = False
                         break
 
@@ -308,25 +308,25 @@ def optimize_overflow_labels(
                     label_candidates,
                     soft = True
                 ):
-                    print(lid, 'invalid binder')
+                    #print(lid, 'invalid binder')
                     valid = False
 
             if valid:
-                print(lid, 'updated')
+                #print(lid, 'updated')
                 pending_updates[lid] = (proposed_center, ol.anchor, proposed_binder)
 
         if not pending_updates:
-            print(f'Converged after {i+1} iterations')
-            return overflow_candidates
+            #print(f'Converged after {i+1} iterations')
+            return overflow_candidates, i+1
 
         for nid, (new_center, new_anchor, _) in pending_updates.items():
-            print(pending_updates)
+            #print(pending_updates)
             update_overflow_label_position(
                 overflow_candidates[nid], new_center[0], new_center[1], new_anchor
             )
 
-    print('Reached max iterations')
-    return overflow_candidates
+    #print('Reached max iterations')
+    return overflow_candidates, i+1
 
 def _get_tight_corners(center, w, h):
     cx, cy = center

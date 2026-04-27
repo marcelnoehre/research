@@ -107,7 +107,7 @@ def filter_candidates_by_neighbor_direction(
     filtered_candidates = copy.deepcopy(candidates)
 
     for node, node_candidates in candidates.items():
-        print(f'### {node} ###')
+        #print(f'### {node} ###')
         if not node_candidates:
             filtered_candidates[node] = node_candidates
             continue

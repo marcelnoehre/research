@@ -26,6 +26,7 @@ from shapely.geometry import LineString, Point, Polygon
 from shapely import unary_union
 from typing import Dict, List, Optional, Tuple
 
+from config import Config
 from label import LabelCandidate, OverflowLabel
 from overflow_bounded import (
     _label_wh,
@@ -35,12 +36,6 @@ from overflow_bounded import (
     binding_line_valid,
 )
 from post_processing import _get_anchor_pt
-
-# ── tunables ────────────────────────────────────────────────────────────────
-OUTER_STEP          = 0.25
-OUTER_CANDIDATE_POOL = 100   # top-K candidates kept per label after phase 1
-MIN_LABEL_DIST = 1.0
-MAX_LABEL_DIST      = 3.0
 
 # cost weights
 W_ALIGN         = 1.0   # anchor alignment
@@ -55,8 +50,7 @@ W_PADDING       = 5.0   # penalty for padding
 W_MISS          = 1e6   # penalty for unplaced label
 W_TYPE          = 100.0 # penalty for labels in the wrong half space
 
-ITERATIVE_HUNGARIAN_MAX_ITERS = 50
-ITER_PENALTY_MULTIPLIER       = 2.0
+OUTER_MARGIN = 0.5
 
 def _generate_candidates_task(args: dict) -> tuple[int, list[dict]]:
     label_id = args["own_label_id"]
@@ -73,6 +67,9 @@ def _generate_candidates_task(args: dict) -> tuple[int, list[dict]]:
         overflow_candidates = args["overflow_candidates"],
         label_candidates    = args["label_candidates"],
         top_k               = args["top_k"],
+        grid_step           = args["grid_step"],
+        min_label_dist      = args["min_label_dist"],
+        max_label_dist      = args["max_label_dist"]
     )
     return label_id, cands
 
@@ -99,14 +96,13 @@ def _sort_by_node_angle(assigned, gap, centroid, G):
     return sorted(assigned, key=key)
 
 # ── Phase 1: per-label candidate generation ──────────────────────────────────
-OUTER_MARGIN = 0.5
-GRID_STEP = 0.5
 
 def _generate_candidates(
     centroid, outer_polygon, placed_union, placed_overflow,
     label: OverflowLabel, node_pos, own_node_id,
     own_label_id, G, overflow_candidates,
-    label_candidates, top_k=OUTER_CANDIDATE_POOL
+    label_candidates, top_k,
+    grid_step, min_label_dist, max_label_dist
 ) -> List[dict]:
     """
     Grid-based candidate generation.
@@ -168,8 +164,8 @@ def _generate_candidates(
     gx1 = poly_bounds[2] + margin
     gy1 = poly_bounds[3] + margin
 
-    xs = np.arange(gx0 + hw, gx1, GRID_STEP)
-    ys = np.arange(gy0 + hh, gy1, GRID_STEP)
+    xs = np.arange(gx0 + hw, gx1, grid_step)
+    ys = np.arange(gy0 + hh, gy1, grid_step)
     gx, gy = np.meshgrid(xs, ys)
     cx_all = gx.ravel()
     cy_all = gy.ravel()
@@ -193,7 +189,7 @@ def _generate_candidates(
     dist2   = ((pts_3d - closest) ** 2).sum(axis=2)          # (N, M)
     min_dist = np.sqrt(dist2.min(axis=1))                     # (N,)
 
-    keep = (min_dist >= MIN_LABEL_DIST) & (min_dist <= MAX_LABEL_DIST)
+    keep = (min_dist >= min_label_dist) & (min_dist <= max_label_dist)
 
     # ── pass 1: bulk AABB filter (pure numpy, no Shapely) ────────────────────
     # Expanded bbox corners for every cell.
@@ -297,10 +293,10 @@ def _generate_candidates(
         c_boundary = dist_to_boundary       * W_BOUNDARY
         cost       = c_angle + c_binder + c_align + c_boundary + c_type
 
-        print(f"  label={own_label_id} dist={dist:.1f} "
-                    f"| c_angle={c_angle:.1f} c_binder={c_binder:.1f}"
-                    f" c_align={c_align:.1f} c_boundary={c_boundary:.1f}"
-                    f" c_type={c_type:.1f} | total={cost:.1f}")
+        #print(f"  label={own_label_id} dist={dist:.1f} "
+                    # f"| c_angle={c_angle:.1f} c_binder={c_binder:.1f}"
+                    # f" c_align={c_align:.1f} c_boundary={c_boundary:.1f}"
+                    # f" c_type={c_type:.1f} | total={cost:.1f}")
 
         scored.append((cost, {
             'cost':        cost,
@@ -361,7 +357,7 @@ def _build_cost_matrix_with_penalties(
 def _solve_assignment(
     label_ids: List[int],
     candidates: Dict[int, List[dict]],
-    top_k: int,
+    cfg: Config
 ) -> Dict[int, Optional[dict]]:
     n = len(label_ids)
     if not label_ids:
@@ -379,10 +375,10 @@ def _solve_assignment(
         best_assignment: Dict[int, Optional[dict]] = {}
         min_actual_cost = float('inf')
 
-        for iteration in range(ITERATIVE_HUNGARIAN_MAX_ITERS):
+        for iteration in range(cfg.ITERATIVE_HUNGARIAN_MAX_ITERS):
             # Build matrix using cumulative penalties
             matrix = _build_cost_matrix_with_penalties(
-                label_ids, cand_by_idx, top_k, penalty_table
+                label_ids, cand_by_idx, cfg.OUTER_CANDIDATE_POOL, penalty_table
             )
             row_ind, col_ind = linear_sum_assignment(matrix)
 
@@ -393,7 +389,7 @@ def _solve_assignment(
             current_base_sum = 0.0
             for i, col in zip(row_ind, col_ind):
                 lid = label_ids[i]
-                k = col - i * top_k
+                k = col - i * cfg.OUTER_CANDIDATE_POOL
                 cands = cand_by_idx[i]
                 if 0 <= k < len(cands) and matrix[i, col] < W_MISS:
                     current_assignment[lid] = cands[k]
@@ -431,7 +427,7 @@ def _solve_assignment(
                 ka, kb = current_chosen_idx[lid_a], current_chosen_idx[lid_b]
                 
                 pair_cost = _conflict_cost(current_assignment[lid_a], current_assignment[lid_b])
-                scale = ITER_PENALTY_MULTIPLIER ** iteration
+                scale = cfg.ITER_PENALTY_MULTIPLIER ** iteration
                 
                 if ka >= 0:
                     penalty_table[(idx_a, ka)] = penalty_table.get((idx_a, ka), 0.0) + (pair_cost * scale)
@@ -531,7 +527,7 @@ def outer_overflow_labels(
     G: nx.Graph,
     label_candidates: Dict[int, List[LabelCandidate]],
     overflow_candidates: Dict[int, OverflowLabel],
-    outer_nodes: List[int],
+    outer_nodes: List[int], cfg: Config
 ) -> Dict[int, OverflowLabel]:
     """
     Two-phase global placement of outer overflow labels.
@@ -588,7 +584,7 @@ def outer_overflow_labels(
     for gap in gaps:
         if not gap["assigned"]:
             continue
-        print(gap["assigned"])
+        #print(gap["assigned"])
         assigned = _sort_by_node_angle(gap["assigned"], gap, centroid, G)
         for node_id in assigned:
             matches = [
@@ -611,26 +607,29 @@ def outer_overflow_labels(
                     "G":                  G,
                     "overflow_candidates": overflow_candidates,
                     "label_candidates":   label_candidates,
-                    "top_k":              OUTER_CANDIDATE_POOL,
+                    "top_k":              cfg.OUTER_CANDIDATE_POOL,
+                    "grid_step":           cfg.GRID_STEP,
+                    "min_label_dist":      cfg.MIN_LABEL_DIST,
+                    "max_label_dist":      cfg.MAX_LABEL_DIST
                 })
     
     with ThreadPoolExecutor() as pool:
         results = pool.map(_generate_candidates_task, tasks)
         for label_id, cands in results:
             all_candidates[label_id] = cands
-            if not cands:
-                print(f"Warning: no candidates generated for label {label_id}")
+            # if not cands:
+            #     print(f"Warning: no candidates generated for label {label_id}")
 
     # ── Phase 2: global assignment ────────────────────────────────────────────
     label_ids  = sorted(all_candidates.keys())
-    assignment = _solve_assignment(label_ids, all_candidates, OUTER_CANDIDATE_POOL)
-
-    for node_id, chosen in assignment.items():
-        pool = all_candidates[node_id]
-        if chosen and pool and chosen is not pool[0]:
-            print(f"label={node_id} picked rank={pool.index(chosen)+1}/{len(pool)} "
-                f"(best={pool[0]['cost']:.1f} chosen={chosen['cost']:.1f}) "
-                f"— displaced by conflict")
+    assignment = _solve_assignment(label_ids, all_candidates, cfg)
+    
+    # for node_id, chosen in assignment.items():
+    #     pool = all_candidates[node_id]
+    #     if chosen and pool and chosen is not pool[0]:
+    #         print(f"label={node_id} picked rank={pool.index(chosen)+1}/{len(pool)} "
+    #             f"(best={pool[0]['cost']:.1f} chosen={chosen['cost']:.1f}) "
+    #             f"— displaced by conflict")
 
     # ── Apply results ─────────────────────────────────────────────────────────
     result_map = dict(overflow_candidates)
@@ -652,12 +651,12 @@ def outer_overflow_labels(
     for node_id, chosen in assignment.items():
         ol = overflow_candidates[node_id]
         if chosen is None:
-            print(f"Warning: could not place overflow label for node {node_id}")
+            #print(f"Warning: could not place overflow label for node {node_id}")
             continue
 
-        print(f"Success: placed label for node {node_id} "
-              f"(cost={chosen['cost']:.2f})")
+        #print(f"Success: placed label for node {node_id} "
+            #   f"(cost={chosen['cost']:.2f})")
         update_overflow_label_position(ol, chosen['cx'], chosen['cy'], chosen['anchor_name'])
         result_map[node_id] = ol
 
-    return all_results, result_map
+    return all_results, result_map, assignment

@@ -123,7 +123,7 @@ def adjust_anchors(
             if not _tmp_candidate_valid(tmp_poly, tmp_poly_tight, label_candidates, overflow_candidates, node_id, G, outer_polygon):
                 continue
 
-            print(f"Adjusting overflow label for node {node_id} from {ol.anchor} to {name}")
+            #print(f"Adjusting overflow label for node {node_id} from {ol.anchor} to {name}")
             overflow_candidates[node_id] = tmp_candidate
             break
 
@@ -180,16 +180,16 @@ def adjust_binders(
             # validity of new label
             dist_to_drawing = Point(new_ax, new_ay).distance(outer_boundary)
             if dist_to_drawing < min_binder_length:
-                print(f"Binder for node {node_id} is too close to the drawing boundary ({dist_to_drawing}).")
+                #print(f"Binder for node {node_id} is too close to the drawing boundary ({dist_to_drawing}).")
                 break
 
             tmp_poly = Polygon(tmp_candidate.expanded_bbox_corners)
             tmp_poly_tight = Polygon(tmp_candidate.bbox_corners)
             if not _tmp_candidate_valid(tmp_poly, tmp_poly_tight, label_candidates, overflow_candidates, node_id, G, outer_polygon):
-                print(f"Adjusted binder for node {node_id} yields invalid position.")
+                #print(f"Adjusted binder for node {node_id} yields invalid position.")
                 break
 
-            print(f"Pulling {node_id} closer to the drawing")
+            #print(f"Pulling {node_id} closer to the drawing")
             overflow_candidates[node_id] = tmp_candidate
 
     return overflow_candidates
