@@ -26,7 +26,12 @@ import statistics
 VISUALIZE = False
 cfg = Config()
 cfg.file = 'car_original'
-output_file = "results.csv"
+label_config = {
+    'general': True,
+    'extent':  False,
+    'intent':  False
+}
+output_file = f"results/eval_{cfg.file}_{'_'.join([k for k, v in label_config.items() if v])}.csv"
 headers = ['top_k', 'grid_step', 'max_dist_to_drawing', 'hungarian_iterations', 'duration_cost', 'final_cost', 'duration_force', 'iterations_force', 'avg_dist_drawing', 'avg_min_dist_ol_obstacle', 'avg_min_dist_binder_obstacle']
 parser = Parser()
 cxt = parser.decode_cxt(f'../data/{cfg.file}.cxt')
@@ -102,11 +107,6 @@ if VISUALIZE:
 # Label Candidates
 ################################################################################
 types = ['general', 'extent', 'intent']
-label_config = {
-    'general': True,
-    'extent':  False,
-    'intent':  False
-}
 label_candidates = {}
 label_texts = {}
 label_scale = {}
@@ -342,10 +342,10 @@ unbounded_overflow_labels = [
     if ol.anchor == 'overflow'
 ]
 
-TOP_Ks = list(range(50, 1050, 50))
+TOP_Ks = [50, 100, 150, 200, 300, 500, 750, 1000]
 GRID_STEPS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 MIN_MAX_DISTS = [(1.0, 2.0), (1.0, 3.0), (1.0, 4.0), (1.0, 5.0), (1.0, 7.5), (1.0, 10.0)]
-ITERATIVE_HUNGARIAN_MAX_ITERATIONS = [1, 2, 5, 10, 25, 40, 55, 70, 85, 100, 125, 150, 175, 200]
+ITERATIVE_HUNGARIAN_MAX_ITERATIONS = [1, 5, 10, 25, 50, 75, 100, 150, 200]
 for tk in TOP_Ks:
     cfg.OUTER_CANDIDATE_POOL = tk
     for gs in GRID_STEPS:
