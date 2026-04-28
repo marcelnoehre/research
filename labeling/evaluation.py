@@ -342,10 +342,13 @@ unbounded_overflow_labels = [
     if ol.anchor == 'overflow'
 ]
 
+print('Starting evaluation')
+
 TOP_Ks = [50, 100, 150, 200, 300, 500, 750, 1000]
 GRID_STEPS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 MIN_MAX_DISTS = [(1.0, 2.0), (1.0, 3.0), (1.0, 4.0), (1.0, 5.0), (1.0, 7.5), (1.0, 10.0)]
 ITERATIVE_HUNGARIAN_MAX_ITERATIONS = [1, 5, 10, 25, 50, 75, 100, 150, 200]
+i = 0
 for tk in TOP_Ks:
     cfg.OUTER_CANDIDATE_POOL = tk
     for gs in GRID_STEPS:
@@ -474,6 +477,8 @@ for tk in TOP_Ks:
 
                 # top_k, grid_step, max_dist_to_drawing, hungarian_iterations, duration_cost, final_cost,
                 # duration_force, iterations_force, avg_dist_drawing, avg_min_dist_ol_obstacle, avg_min_dist_binder_obstacle
+                i += 1
+                print(f'Writing: {i}')
                 row_to_save = [
                     cfg.OUTER_CANDIDATE_POOL, 
                     cfg.GRID_STEP,
