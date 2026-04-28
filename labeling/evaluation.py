@@ -152,124 +152,132 @@ label_candidates = filter_optimal_space(G, label_candidates, bounded_faces, oute
 ################################################################################
 # Overflow Candidates
 ################################################################################
-overflow_candidates = {}
+overflow_candidates_original = {}
 for node_id in lattice.nodes:
     if not label_candidates[node_id]:
         for type in types:
             #print(node_id, type, label_texts.get((node_id, type), ''))
             if label_texts.get((node_id, type), ''):
-                overflow_candidates[len(overflow_candidates)] = compute_overflow_label(G, node_id, label_texts.get((node_id, type), ''), label_type=type, desired_height=desired_height)
+                overflow_candidates_original[len(overflow_candidates_original)] = compute_overflow_label(G, node_id, label_texts.get((node_id, type), ''), label_type=type, desired_height=desired_height)
 
-skipping_inner = len(overflow_candidates) >= len(outer_nodes)
+skipping_inner = len(overflow_candidates_original) >= len(outer_nodes)
 
 ################################################################################
 # Inner Overflow Labels
 ################################################################################
 if not skipping_inner:
-    overflow_candidates = inner_overflow_labels(G, label_candidates, overflow_candidates, bounded_faces, centers)
+    overflow_candidates_original = inner_overflow_labels(G, label_candidates, overflow_candidates_original, bounded_faces, centers)
 
 ################################################################################
 # Outer Overflow Labels
 ################################################################################
-unbounded_overflow_labels = [
-    lid
-    for lid, ol in overflow_candidates.items()
-    if ol.anchor == 'overflow'
-]
-
-print('Starting evaluation')
-
 TOP_Ks = [50, 100, 150, 200, 300, 500, 750, 1000]
 GRID_STEPS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 MIN_MAX_DISTS = [(1.0, 2.0), (1.0, 3.0), (1.0, 4.0), (1.0, 5.0), (1.0, 7.5), (1.0, 10.0)]
 ITERATIVE_HUNGARIAN_MAX_ITERATIONS = [1, 5, 10, 25, 50, 75, 100, 150, 200]
-i = 0
-for tk in TOP_Ks:
-    cfg.OUTER_CANDIDATE_POOL = tk
-    for gs in GRID_STEPS:
-        cfg.GRID_STEP = gs
-        for min_dist, max_dist in MIN_MAX_DISTS:
-            for iter_amount in ITERATIVE_HUNGARIAN_MAX_ITERATIONS:
-                cfg.MIN_LABEL_DIST = min_dist
-                cfg.MAX_LABEL_DIST = max_dist
-                cfg.ITERATIVE_HUNGARIAN_MAX_ITERS = iter_amount
 
-                start_time = time.perf_counter()
-                all_overflow_candidates, overflow_candidates, assignment = outer_overflow_labels(G, label_candidates, overflow_candidates, outer_nodes, cfg)
-                end_time = time.perf_counter()
-                duration_cost = end_time - start_time
+print('Starting evaluation')
+with open(output_file, mode="a", newline="") as f:
+    writer = csv.writer(f)
 
-                final_cost = 0.0
-                for _, chosen in assignment.items():
-                    final_cost += chosen['cost']
+    i = 0
+    for tk in TOP_Ks:
+        cfg.OUTER_CANDIDATE_POOL = tk
+        for gs in GRID_STEPS:
+            cfg.GRID_STEP = gs
+            for min_dist, max_dist in MIN_MAX_DISTS:
+                for iter_amount in ITERATIVE_HUNGARIAN_MAX_ITERATIONS:
+                    cfg.MIN_LABEL_DIST = min_dist
+                    cfg.MAX_LABEL_DIST = max_dist
+                    cfg.ITERATIVE_HUNGARIAN_MAX_ITERS = iter_amount
 
-                ################################################################################
-                overflow_candidates = adjust_anchors(G, label_candidates, overflow_candidates, unbounded_overflow_labels, outer_nodes)
+                    overflow_candidates = {
+                        lid: copy.deepcopy(ol)
+                        for lid, ol in overflow_candidates_original.items()
+                        if ol.anchor == 'overflow'
+                    }
 
-                ################################################################################
-                # Force Based Refinement
-                ################################################################################
-                
-                start_time = time.perf_counter()
-                overflow_candidates, iters_converged = optimize_overflow_labels(G, label_candidates, overflow_candidates, unbounded_overflow_labels, outer_nodes)
-                end_time = time.perf_counter()
-                duration_force = end_time - start_time
+                    unbounded_overflow_labels = [
+                        ol
+                        for _, ol in overflow_candidates.items()
+                        if ol.anchor == 'overflow'
+                    ]
 
-                outer_polygon = Polygon([G.nodes[n]['pos'] for n in outer_nodes])
-                ink_polys = [
-                    Polygon(cand.inner_bbox_corners)
-                    for cands in label_candidates.values()
-                    for cand in cands
-                ]
-                outer_circles = []
-                for onid in outer_nodes:
-                    outer_pos = G.nodes[onid]['pos']
-                    circle_radius = 0.15
-                    outer_circles.append(Point(outer_pos).buffer(circle_radius))
+                    start_time = time.perf_counter()
+                    all_overflow_candidates, overflow_candidates, assignment = outer_overflow_labels(G, label_candidates, overflow_candidates, outer_nodes, cfg)
+                    end_time = time.perf_counter()
+                    duration_cost = end_time - start_time
 
-                # avg_dist_drawing
-                # avg_min_dist_ol_obstacle
-                dists_drawing = []
-                dists_obstacles = []
-                for lid, ol in overflow_candidates.items():
-                    _size = _label_wh(ol)
-                    ol_poly = _label_bbox_polygon(*ol.center, *_size)
-                    dists_drawing.append(outer_polygon.distance(ol_poly))
+                    final_cost = 0.0
+                    for _, chosen in assignment.items():
+                        final_cost += chosen['cost']
 
-                    # min distance to obstacles
-                    _dists = []
-                    for obstacle_poly in ink_polys + outer_circles:
-                        _dists.append(obstacle_poly.distance(ol_poly))
-                    dists_obstacles.append(min(_dists))
-                
-                # avg_min_dist_binder_obstacle
-                dists_binder = []
-                for lid, ol in overflow_candidates.items():
-                    anchor_pt = _get_anchor_pt(ol)
-                    lid_binder = LineString([anchor_pt, G.nodes[ol.node_id]['pos']])
-                    _dists = []
-                    for obstacle_poly in ink_polys + outer_circles:
-                        _dists.append(obstacle_poly.distance(lid_binder))
-                    dists_binder.append(min(_dists))
+                    ################################################################################
+                    overflow_candidates = adjust_anchors(G, label_candidates, overflow_candidates, unbounded_overflow_labels, outer_nodes)
 
-                # top_k, grid_step, max_dist_to_drawing, hungarian_iterations, duration_cost, final_cost,
-                # duration_force, iterations_force, avg_dist_drawing, avg_min_dist_ol_obstacle, avg_min_dist_binder_obstacle
-                i += 1
-                print(f'Writing: {i}')
-                row_to_save = [
-                    cfg.OUTER_CANDIDATE_POOL, 
-                    cfg.GRID_STEP,
-                    cfg.MAX_LABEL_DIST,
-                    cfg.ITERATIVE_HUNGARIAN_MAX_ITERS,
-                    duration_cost,
-                    final_cost,
-                    duration_force,
-                    iters_converged,
-                    statistics.mean(dists_drawing),
-                    statistics.mean(dists_obstacles),
-                    statistics.mean(dists_binder)
-                ]
+                    ################################################################################
+                    # Force Based Refinement
+                    ################################################################################
+                    
+                    start_time = time.perf_counter()
+                    overflow_candidates, iters_converged = optimize_overflow_labels(G, label_candidates, overflow_candidates, unbounded_overflow_labels, outer_nodes)
+                    end_time = time.perf_counter()
+                    duration_force = end_time - start_time
 
-                with open(output_file, mode="a", newline="") as f:
-                    writer = csv.writer(f)
+                    outer_polygon = Polygon([G.nodes[n]['pos'] for n in outer_nodes])
+                    ink_polys = [
+                        Polygon(cand.inner_bbox_corners)
+                        for cands in label_candidates.values()
+                        for cand in cands
+                    ]
+                    outer_circles = []
+                    for onid in outer_nodes:
+                        outer_pos = G.nodes[onid]['pos']
+                        circle_radius = 0.15
+                        outer_circles.append(Point(outer_pos).buffer(circle_radius))
+
+                    # avg_dist_drawing
+                    # avg_min_dist_ol_obstacle
+                    dists_drawing = []
+                    dists_obstacles = []
+                    for lid, ol in overflow_candidates.items():
+                        _size = _label_wh(ol)
+                        ol_poly = _label_bbox_polygon(*ol.center, *_size)
+                        dists_drawing.append(outer_polygon.distance(ol_poly))
+
+                        # min distance to obstacles
+                        _dists = []
+                        for obstacle_poly in ink_polys + outer_circles:
+                            _dists.append(obstacle_poly.distance(ol_poly))
+                        dists_obstacles.append(min(_dists))
+                    
+                    # avg_min_dist_binder_obstacle
+                    dists_binder = []
+                    for lid, ol in overflow_candidates.items():
+                        anchor_pt = _get_anchor_pt(ol)
+                        lid_binder = LineString([anchor_pt, G.nodes[ol.node_id]['pos']])
+                        _dists = []
+                        for obstacle_poly in ink_polys + outer_circles:
+                            _dists.append(obstacle_poly.distance(lid_binder))
+                        dists_binder.append(min(_dists))
+
+                    # top_k, grid_step, max_dist_to_drawing, hungarian_iterations, duration_cost, final_cost,
+                    # duration_force, iterations_force, avg_dist_drawing, avg_min_dist_ol_obstacle, avg_min_dist_binder_obstacle
+                    i += 1
+                    print(f'Writing: {i}', flush=True)
+                    row_to_save = [
+                        cfg.OUTER_CANDIDATE_POOL, 
+                        cfg.GRID_STEP,
+                        cfg.MAX_LABEL_DIST,
+                        cfg.ITERATIVE_HUNGARIAN_MAX_ITERS,
+                        duration_cost,
+                        final_cost,
+                        duration_force,
+                        iters_converged,
+                        statistics.mean(dists_drawing),
+                        statistics.mean(dists_obstacles),
+                        statistics.mean(dists_binder)
+                    ]
+
                     writer.writerow(row_to_save)
+                    f.flush()
