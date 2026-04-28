@@ -100,8 +100,8 @@ class Variables():
         Dictionary storing the resultant forces after optimization
     '''
 
-    def __init__(self, cxt: str, args: Optional[Dict[str, bool]]):
-
+    def __init__(self, name: str, cxt: str, args: Optional[Dict[str, bool]]):
+        self.name = name
         self.cxt = cxt
         if cxt.endswith('.cxt'):
             self.context = decode_cxt(cxt)

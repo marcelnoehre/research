@@ -57,6 +57,9 @@ class Realizer():
             c: (np.array([drawing.nodes[i].x, drawing.nodes[i].y]) * -1 * np.array([np.sqrt(2), 1/np.sqrt(2)])).tolist()
             for i, c in enumerate(self.lectic_order)
         }
+        pos = [f'{self.coordinates[c][0]} {self.coordinates[c][1]}' for c in self.vars.concepts]
+        with open(f'evaluation/positions/dim_draw/{self.vars.name}.pos', 'w', encoding='utf-8') as f:
+            f.write('\n'.join(pos))
         return self.coordinates
 
     def _derive_base_vectors(self):
