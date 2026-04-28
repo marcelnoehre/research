@@ -33,6 +33,9 @@ class LinearEquationSolver:
             self._solve_approximate()
 
     def _solve_approximate(self):
+        self.equations = [
+            eq for eq in self.equations if eq != False
+        ]
         A, b = linear_eq_to_matrix(self.equations, self.symbols)
         sol_matrix = A.pinv() * b
         self.solution = [{self.symbols[i]: sol_matrix[i] for i in range(len(self.symbols))}]
