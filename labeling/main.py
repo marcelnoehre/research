@@ -19,7 +19,7 @@ from forces import *
 ################################################################################
 VISUALIZE = True
 cfg = Config()
-cfg.file = 'car_original'
+cfg.file = 'car'
 parser = Parser()
 cxt = parser.decode_cxt(f'../data/{cfg.file}.cxt')
 #print(cxt.print_data())
@@ -329,7 +329,7 @@ unbounded_overflow_labels = [
     for lid, ol in overflow_candidates.items()
     if ol.anchor == 'overflow'
 ]
-all_overflow_candidates, overflow_candidates, _ = outer_overflow_labels(G, label_candidates, overflow_candidates, outer_nodes)
+all_overflow_candidates, overflow_candidates, _ = outer_overflow_labels(G, label_candidates, overflow_candidates, outer_nodes, cfg)
 
 # plot all unbounded overflow candidates
 if VISUALIZE:
@@ -395,7 +395,7 @@ if VISUALIZE:
 ################################################################################
 # Force Based Refinement
 ################################################################################
-overflow_candidates = optimize_overflow_labels(G, label_candidates, overflow_candidates, unbounded_overflow_labels, outer_nodes)
+overflow_candidates, _ = optimize_overflow_labels(G, label_candidates, overflow_candidates, unbounded_overflow_labels, outer_nodes)
 
 if VISUALIZE:
     plot_lattice(
