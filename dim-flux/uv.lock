@@ -207,6 +207,7 @@ version = "1.0.0"
 source = { virtual = "." }
 dependencies = [
     { name = "fcapy" },
+    { name = "geg-metrics" },
     { name = "networkx" },
     { name = "numpy" },
     { name = "odis-python" },
@@ -218,6 +219,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "fcapy", specifier = ">=0.1.4.5" },
+    { name = "geg-metrics", specifier = ">=0.2.2" },
     { name = "networkx", specifier = ">=3.6.1" },
     { name = "numpy", specifier = ">=2.4.2" },
     { name = "odis-python", specifier = ">=2026.4.0" },
@@ -297,6 +299,22 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/90/b2/2a3d1374b7780999d3184e171e25439a8358c47b481f68be883c14086b4c/frozendict-2.4.7.tar.gz", hash = "sha256:e478fb2a1391a56c8a6e10cc97c4a9002b410ecd1ac28c18d780661762e271bd", size = 317082, upload-time = "2025-11-11T22:40:14.251Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/38/74/f94141b38a51a553efef7f510fc213894161ae49b88bffd037f8d2a7cb2f/frozendict-2.4.7-py3-none-any.whl", hash = "sha256:972af65924ea25cf5b4d9326d549e69a9a4918d8a76a9d3a7cd174d98b237550", size = 16264, upload-time = "2025-11-11T22:40:12.836Z" },
+]
+
+[[package]]
+name = "geg-metrics"
+version = "0.2.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "networkx" },
+    { name = "numpy" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+    { name = "svgpathtools" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3c/a2/056992375c6b961ad4fef13ce9363a05313c6339950fe6357a71905de96f/geg_metrics-0.2.2.tar.gz", hash = "sha256:1bad6df8e6403ad20ba599711e9bd91001399c0044eae086762164a346d41c5d", size = 52712, upload-time = "2026-04-22T13:05:50.646Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/77/e7/f43010553057cdee67b4149ecff9c6410e2fac710f5673e0a81197174b3f/geg_metrics-0.2.2-py3-none-any.whl", hash = "sha256:5c4695a4de1ac9b382c1efe34ea0cccd2e9ee066b082d8bbccd3825c45f93c93", size = 61505, upload-time = "2026-04-22T13:05:48.558Z" },
 ]
 
 [[package]]
@@ -1044,6 +1062,29 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e8/c4/ba2f8066cceb6f23394729afe52f3bf7adec04bf9ed2c820b39e19299111/sortedcontainers-2.4.0.tar.gz", hash = "sha256:25caa5a06cc30b6b83d11423433f65d1f9d76c4c6a0c90e3379eaa43b9bfdb88", size = 30594, upload-time = "2021-05-16T22:03:42.897Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/32/46/9cb0e58b2deb7f82b84065f37f3bffeb12413f947f9388e4cac22c4621ce/sortedcontainers-2.4.0-py2.py3-none-any.whl", hash = "sha256:a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0", size = 29575, upload-time = "2021-05-16T22:03:41.177Z" },
+]
+
+[[package]]
+name = "svgpathtools"
+version = "1.7.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scipy" },
+    { name = "svgwrite" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3e/a0/06163182bdb00300a23e51b433a6ca5c881761e7dfbef432b4da44e3a84a/svgpathtools-1.7.2.tar.gz", hash = "sha256:5974daba24825e22f284ea10aa980d7d6f77a1ca55d914d80283e3ea8a7ac450", size = 2136092, upload-time = "2025-11-30T19:15:03.446Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/98/4b/9128c82796479426fba219a5b0da70bbf8f1f0b571a54cc7a420cea0e9c4/svgpathtools-1.7.2-py2.py3-none-any.whl", hash = "sha256:ecb1885f7c6363be2903f39d8584ed772bd055a2e92044f43d412780b1d4c283", size = 68346, upload-time = "2025-11-30T19:15:02.053Z" },
+]
+
+[[package]]
+name = "svgwrite"
+version = "1.4.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/16/c1/263d4e93b543390d86d8eb4fc23d9ce8a8d6efd146f9427364109004fa9b/svgwrite-1.4.3.zip", hash = "sha256:a8fbdfd4443302a6619a7f76bc937fc683daf2628d9b737c891ec08b8ce524c3", size = 189516, upload-time = "2022-07-14T14:05:26.107Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/84/15/640e399579024a6875918839454025bb1d5f850bb70d96a11eabb644d11c/svgwrite-1.4.3-py3-none-any.whl", hash = "sha256:bb6b2b5450f1edbfa597d924f9ac2dd099e625562e492021d7dd614f65f8a22d", size = 67122, upload-time = "2022-07-14T14:05:24.459Z" },
 ]
 
 [[package]]
