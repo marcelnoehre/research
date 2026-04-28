@@ -1,0 +1,23 @@
+[project]
+name = "dim-flux"
+version = "1.0.0"
+description = "DimFlux: Force-Based Doubly-Additive Drawings"
+authors = [
+    { name = "marcelnoehre", email = "noehre@cs.uni-kassel.de" }
+]
+readme = "README.md"
+requires-python = ">=3.12"
+license = {file = "LICENSE"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Creative Commons Attribution 4.0 International Public License (CC BY 4.0)"
+]
+dependencies = [
+    "fcapy>=0.1.4.5",
+    "networkx>=3.6.1",
+    "numpy>=2.4.2",
+    "odis-python>=2026.4.0",
+    "python-sat>=1.8.dev30",
+    "sympy>=1.14.0",
+    "z3-solver>=4.16.0.0",
+]
