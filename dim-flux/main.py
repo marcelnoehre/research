@@ -7,13 +7,12 @@ from src.fdp.forces import ForceDirectedPlacement
 from src.dim_flux.snap_to_grid import SnapToGrid
 
 def main():
-    for name in ['convex-ordinal']:
-    # for name in ['Forum-Romanum', 'living_beings_and_water', 'car', 'triangles', 'convex-ordinal']:
-        cxt = f'evaluation/data/study_reduced/{name}.cxt'
-        vars = Variables(name, cxt, {
-    # for i in range(1, 127):
-        # cxt = f'evaluation/data/m4_dim_draw/{i}.cxt'
-        # vars = Variables(str(i), cxt, {
+    # for name in ['Forum-Romanum', 'living_beings_and_water', 'car', 'triangles']: #, 'convex-ordinal']:
+    #     cxt = f'evaluation/data/study_reduced/{name}.cxt'
+    #     vars = Variables(name, cxt, {
+    for i in range(1, 127):
+        cxt = f'evaluation/data/m4_dim_draw/{i}.cxt'
+        vars = Variables(str(i), cxt, {
             'plot_si_graph': False,
             'si_graph_annotations':  False,
             'plot_initial_layout':  False,
@@ -78,7 +77,7 @@ def main():
         # )
 
         pos = [f'{vars.coordinates[c][0]} {vars.coordinates[c][1]}' for c in vars.concepts]
-        with open(f'evaluation/positions/dim_flux/{vars.name}.pos', 'w', encoding='utf-8') as f:
+        with open(f'evaluation/positions/dim_draw_double/{vars.name}.pos', 'w', encoding='utf-8') as f:
             f.write('\n'.join(pos))
 
 if __name__ == "__main__":

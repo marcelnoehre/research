@@ -154,7 +154,7 @@ class Variables():
         ]
 
         # weights
-        self.w_rep = 50.0
+        self.w_rep = 30.0
         self.w_att = 1.0
         self.w_grav = 30.0
 
