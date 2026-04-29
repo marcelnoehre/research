@@ -198,8 +198,8 @@ with open(output_file, mode="a", newline="") as f:
                     }
 
                     unbounded_overflow_labels = [
-                        ol
-                        for _, ol in overflow_candidates.items()
+                        lid
+                        for lid, ol in overflow_candidates.items()
                         if ol.anchor == 'overflow'
                     ]
 
