@@ -24,7 +24,7 @@ import statistics
 # Data
 ################################################################################
 cfg = Config()
-cfg.file = 'car_original'
+cfg.file = 'car'
 label_config = {
     'general': True,
     'extent':  False,
@@ -171,10 +171,10 @@ if not skipping_inner:
 ################################################################################
 # Outer Overflow Labels
 ################################################################################
-TOP_Ks = [50, 100, 150, 200, 300, 500, 750, 1000]
-GRID_STEPS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-MIN_MAX_DISTS = [(1.0, 2.0), (1.0, 3.0), (1.0, 4.0), (1.0, 5.0), (1.0, 7.5), (1.0, 10.0)]
-ITERATIVE_HUNGARIAN_MAX_ITERATIONS = [1, 5, 10, 25, 50, 75, 100, 150, 200]
+TOP_Ks = [1000]
+GRID_STEPS = [0.25, 0.5, 0.75, 1.0]
+MIN_MAX_DISTS = [(1.0, 2.0), (1.0, 3.5), (1.0, 5.0)]
+ITERATIVE_HUNGARIAN_MAX_ITERATIONS = [10, 25, 50, 100, 200]
 
 print('Starting evaluation')
 with open(output_file, mode="a", newline="") as f:

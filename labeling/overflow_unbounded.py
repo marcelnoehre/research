@@ -413,9 +413,9 @@ def _solve_assignment(
             if total_actual_cost < min_actual_cost:
                 min_actual_cost = total_actual_cost
                 best_assignment = copy.copy(current_assignment)
-                print(f"[Hungarian] Iter {iteration+1}: New Best Cost! {total_actual_cost:.2f}")
-            else:
-                print(f"[Hungarian] Iter {iteration+1}: Cost {total_actual_cost:.2f} (Best: {min_actual_cost:.2f})")
+            #     print(f"[Hungarian] Iter {iteration+1}: New Best Cost! {total_actual_cost:.2f}")
+            # else:
+            #     print(f"[Hungarian] Iter {iteration+1}: Cost {total_actual_cost:.2f} (Best: {min_actual_cost:.2f})")
 
             # Exit early only if we hit a perfect zero-conflict state
             if not conflict_pairs:
