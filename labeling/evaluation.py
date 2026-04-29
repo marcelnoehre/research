@@ -24,7 +24,7 @@ import statistics
 # Data
 ################################################################################
 cfg = Config()
-cfg.file = 'car'
+cfg.file = 'triangles'
 label_config = {
     'general': True,
     'extent':  False,
