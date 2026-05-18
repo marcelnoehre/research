@@ -199,7 +199,9 @@ for _cxt in range(1, 127):
         
         with open(_path_pos, 'r') as f:
             coords = [tuple(map(float, line.split()[:2])) for line in f if line.strip()]
-        _positions = [coords[_lectic_order.index(c)] for c in _concepts]
+
+        _lectic_map = {concept: coords[i] for i, concept in enumerate(_lectic_order)}
+        _positions = [_lectic_map[c] for c in _concepts]
 
         assert len(_concepts) == len(_positions)
         
