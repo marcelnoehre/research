@@ -204,7 +204,7 @@ for type_original in [
         _intents = all_intents(_lat)
         _attributes = _cxt.attribute_names
         _lectic_order = compute_lectic_order(_concepts, _intents, _attributes)
-        positions = scaled_positions(cxt_original, type_original, 10)
+        positions = scaled_positions(cxt_original, type_original, 10 if isinstance(cxt_original, (int, float)) else 20)
         concept_to_coord = {concept: positions[i] for i, concept in enumerate(_concepts)}
         pos = [f'{concept_to_coord[c][0]} {concept_to_coord[c][1]}' for c in _lectic_order]
         with open(f'pos_lectic/{type_mapping[type_original]}/{cxt_mapping[cxt_original]}.pos', 'w', encoding='utf-8') as f:
