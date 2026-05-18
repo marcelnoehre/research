@@ -288,12 +288,7 @@ for _cxt in ['forum_romanum', 'living_beings_and_water', 'drive_concepts', 'tria
         if _version != 'hand_drawn':
             latex_code.append(fr'\\ \scriptsize \textit{{{_metrics['hand'].iloc[0]}}}')
 
-        if _version == 'dim_flux':
-            latex_code.append(r'\end{minipage} \\[4ex]')
-        else:
-            latex_code.append(r'\end{minipage} \hfill')
-
-        # latex_code.append(r'\end{minipage}%')
+        latex_code.append(r'\end{minipage}%')
 
         if _version in ['hand_drawn', 'sup_inf_doubly']:
             latex_code.extend(['', r'\vspace{4em}', ''])
