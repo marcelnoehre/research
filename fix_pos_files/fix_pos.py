@@ -46,25 +46,19 @@ def _lectically_smaller(attributes: list, intent_a: set, intent_b: set) -> bool:
     return False
 
 def compute_lectic_order(concepts: list, intents: dict, attributes: list) -> list:
-    '''
-    Sort all concepts by the lectic order on their intents.
-
-    Returns
-    -------
-    list
-        Concept IDs sorted lectically
-    '''
+    # Fix: Copy the list so we don't scramble the original '_concepts' reference
+    concepts_copy = list(concepts) 
     
-    for i in range(1, len(concepts)):
-        key = concepts[i]
+    for i in range(1, len(concepts_copy)):
+        key = concepts_copy[i]
         key_intent = intents[key]
         j = i - 1
-        while j >= 0 and _lectically_smaller(attributes, key_intent, intents[concepts[j]]):
-            concepts[j + 1] = concepts[j]
+        while j >= 0 and _lectically_smaller(attributes, key_intent, intents[concepts_copy[j]]):
+            concepts_copy[j + 1] = concepts_copy[j]
             j -= 1
-        concepts[j + 1] = key
+        concepts_copy[j + 1] = key
 
-    return concepts
+    return concepts_copy
 
 def all_intents(
         lattice: ConceptLattice
