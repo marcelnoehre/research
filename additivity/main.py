@@ -5,7 +5,7 @@ from latex import latex_export
 from lectic import *
 import networkx as nx
 
-file = 'drive_concepts'
+file = '121'
 parser = Parser()
 cxt = parser.decode_cxt(f'./data/{file}.cxt')
 cxt.attribute_names

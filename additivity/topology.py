@@ -5,7 +5,7 @@ from data import Parser
 # length 6 cycle = cube
 
 # 1. Load Data & Build the Clean Hasse skeleton
-file = 'forum_romanum'
+file = '30'
 cxt = Parser().decode_cxt(f'./data/{file}.cxt')
 lattice = ConceptLattice.from_context(cxt)
 G_hasse = nx.transitive_reduction(lattice.to_networkx())

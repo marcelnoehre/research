@@ -12,27 +12,23 @@ for i in range(1, 127):
     tr = nx.transitive_reduction(G)
     tr_smoothed = tr.copy()
 
-    while True:
-        nodes_to_remove = [
-            node for node in tr_smoothed.nodes() 
-            if tr_smoothed.in_degree(node) == 1 and tr_smoothed.out_degree(node) == 1
-        ]
+    nodes_to_remove = [
+        node for node in tr_smoothed.nodes() 
+        if tr_smoothed.in_degree(node) == 1 and tr_smoothed.out_degree(node) == 1
+    ]
 
-        if not nodes_to_remove:
-            break
-
-        for node in nodes_to_remove:
-            # Get the single predecessor and single successor
-            pred = list(tr_smoothed.predecessors(node))[0]
-            succ = list(tr_smoothed.successors(node))[0]
-            
-            # Connect the two outer nodes directly
-            tr_smoothed.add_edge(pred, succ)
-            
-            # Remove the middle node
-            tr_smoothed.remove_node(node)
+    for node in nodes_to_remove:
+        # Get the single predecessor and single successor
+        pred = list(tr_smoothed.predecessors(node))[0]
+        succ = list(tr_smoothed.successors(node))[0]
         
-        tr_smoothed = nx.transitive_reduction(tr_smoothed)
+        # Connect the two outer nodes directly
+        tr_smoothed.add_edge(pred, succ)
+        
+        # Remove the middle node
+        tr_smoothed.remove_node(node)
+    
+    tr_smoothed = nx.transitive_reduction(tr_smoothed)
 
     import matplotlib.pyplot as plt
 
