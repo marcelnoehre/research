@@ -203,7 +203,7 @@ for type_original in [
         pos = [(concept_to_coord[c][0], concept_to_coord[c][1]) for c in _lectic_order]
         relations = list(nx.transitive_reduction(_lat.to_networkx()).edges)
         relations_lectic = list([(_lectic_order.index(a), _lectic_order.index(b)) for a, b in relations])
-        G_lectic = nx.Graph()
+        G_lectic = nx.DiGraph()
         for i, (x,y) in enumerate(pos):
             G_lectic.add_node(i, x=x, y=y)
         for (a, b) in relations_lectic:

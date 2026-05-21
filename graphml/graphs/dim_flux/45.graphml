@@ -2,7 +2,7 @@
 <graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd">
   <key id="d1" for="node" attr.name="y" attr.type="double" />
   <key id="d0" for="node" attr.name="x" attr.type="double" />
-  <graph edgedefault="undirected">
+  <graph edgedefault="directed">
     <node id="0">
       <data key="d0">0.028908940789249642</data>
       <data key="d1">2.5</data>
