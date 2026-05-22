@@ -2,9 +2,10 @@ from data import Parser
 from fcapy.lattice import ConceptLattice
 import networkx as nx
 
-file = '43'
+i = 'Forum-Romanum'
+print(f'### {i} ###')
 parser = Parser()
-cxt = parser.decode_cxt(f'../data/{file}.cxt')
+cxt = parser.decode_cxt(f'../data/{i}.cxt')
 lat = ConceptLattice.from_context(cxt)
 G = nx.transitive_reduction(lat.to_networkx())
 
@@ -18,29 +19,22 @@ def longest_path_length(G, source, target):
         return 0
 
 max_chain = longest_path_length(G, top, bot)
-
-def get_predecessors_min_height(node, heights):
-    preds = list(G.predecessors(node))
-    return min(heights[p] for p in preds) if preds else 0
-
-# First pass: assign integer heights from from_bot
 heights = {}
-for node in G.nodes:
-    depth_from_top = longest_path_length(G, top, node)
-    depth_from_bot = longest_path_length(G, node, bot)
-    heights[node] = float(depth_from_bot)
 
 for node in G.nodes:
-    preds = list(G.predecessors(node))   # nodes above
-    succs = list(G.successors(node))     # nodes below
-    if not preds or not succs:
-        continue
+    heights[node] = float(longest_path_length(G, node, bot))
+
+for node in G.nodes:
+    preds = list(G.predecessors(node))
+    succs = list(G.successors(node))
     
-    max_succ_height = max(heights[s] for s in succs)
-    min_pred_height = min(heights[p] for p in preds)
-    # subdividing: sits between two levels that are 2 apart in from_bot
-    if (heights[node] - max_succ_height == 0) and (min_pred_height - heights[node] == 2):
-        heights[node] += 0.5
+    is_doubly_irreducible = (len(preds) == 1 and len(succs) == 1)
+    
+    if is_doubly_irreducible:
+        above = preds[0]
+        below = succs[0]
+        gap = heights[above] - heights[below]
+        heights[node] = heights[below] + gap / 2
 
 for node in G.nodes:
-    print(f"Node {node:3d} | from_bot: {longest_path_length(G, node, bot):2d} | height: {heights[node]}")
+    print(f"Node {node:3d} | height: {heights[node]}")
