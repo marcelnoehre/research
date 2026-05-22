@@ -2,7 +2,7 @@ import numpy as np
 import networkx as nx
 
 
-G = nx.read_graphml('graphs/hand_drawn/convex_ordinal.graphml')
+G = nx.read_graphml('graphs/dim_flux/forum_romanum.graphml')
 
 _positions = {node: np.array([float(data['x']), float(data['y'])]) for node, data in G.nodes(data=True)}
 _tr = nx.transitive_reduction(G)
@@ -39,4 +39,21 @@ for v, w in _positions.items():
 
         conflict_distance += 1.0 / dist**2
 
-print(conflict_distance)
+edge_lengths = [
+    np.linalg.norm(_positions[i] - _positions[j])
+    for (i, j) in _tr.edges
+]
+avg_edge_len = np.mean(edge_lengths)
+conflict_distance_norm = conflict_distance * avg_edge_len**2
+n_pairs = sum(
+    1 for v in _positions
+    for (i, j) in _tr.edges
+    if v != i and v != j
+)
+
+raw = conflict_distance_norm / n_pairs
+score = np.tanh(1.0 / (raw + 1e-9))
+print(f"conflict_distance: {conflict_distance:.4f}")
+print(f"avg_edge_len:      {avg_edge_len:.4f}")
+print(f"raw:               {raw:.4f}")
+print(f'score:             {score:.4f}')
