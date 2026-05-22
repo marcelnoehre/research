@@ -1,62 +1,116 @@
+
 import requests
 import pandas as pd
-from collections import defaultdict
-
-voting_history = defaultdict(lambda: defaultdict(list))
-
+ 
+# ---------------------------------------------------------------------------
+# Cluster definitions
+# ---------------------------------------------------------------------------
+ 
+CLUSTERS = {
+    'Nordic':                ['IS', 'NO', 'SE', 'DK', 'FI'],
+    'British Isles':         ['GB', 'GB-WLS', 'IE'],
+    'Benelux':               ['BE', 'NL', 'LU'],
+    'DACH':                  ['DE', 'AT', 'CH'],
+    'Iberia':                ['PT', 'ES', 'AD'],
+    'Italian Peninsula':     ['IT', 'SM', 'MC'],
+    'Balkans':               ['AL', 'BA', 'BG', 'HR', 'ME', 'MK', 'RO', 'RS', 'SI'],
+    'Visegrad':              ['PL', 'CZ', 'SK', 'HU'],
+    'Baltics':               ['EE', 'LV', 'LT'],
+    'Eastern Europe':        ['RU', 'BY', 'UA', 'MD'],
+    'Caucasus':              ['GE', 'AM', 'AZ'],
+    'Eastern Mediterranean': ['GR', 'CY', 'TR', 'IL', 'MT'],
+    'Non-European':          ['MA', 'KZ', 'AU'],
+    'Defunct':               ['YU', 'CS'],
+}
+ 
+THRESHOLD_RATIO = 0.66  # cluster total >= 50% of max cluster total that year → 1
+ 
+# ---------------------------------------------------------------------------
+# Fetch & build matrix
+# ---------------------------------------------------------------------------
+ 
+records = {}
+ 
 for year in range(1957, 2026):
     if year == 2020:
         continue
+ 
     try:
         print(year)
         url = f'https://eurovisionapi.runasp.net/api/senior/contests/{year}'
         response = requests.get(url)
         response.raise_for_status()
         data = response.json()
-        final_round = next((item for item in data['rounds'] if item.get('name') == 'final'), None)
-        for performance in final_round['performances']:
-            contestant = next((c for c in data['contestants'] if c.get('id') == performance['contestantId']), None)['country']
-            votes = next((s for s in performance['scores'] if s.get('name') == 'total'), None)['votes']
-
-            for voter, points in votes.items():
-                voting_history[voter][contestant].append(points)
-
+ 
+        final_round = next(
+            (r for r in data['rounds'] if r.get('name') == 'final'), None
+        )
+        if final_round is None:
+            print(f"  No final round for {year}, skipping.")
+            continue
+ 
+        # Winner = first performance in the final
+        performance = final_round['performances'][0]
+ 
+        total_score = next(
+            (s for s in performance['scores'] if s.get('name') == 'total'), None
+        )
+        if total_score is None:
+            print(f"  No total score for {year}, skipping.")
+            continue
+ 
+        votes = total_score['votes']  # {country_code: points}
+ 
+        # Sum points per cluster
+        cluster_totals = {
+            cluster: sum(votes.get(m, 0) for m in members)
+            for cluster, members in CLUSTERS.items()
+        }
+ 
+        # Threshold = 50% of the highest-scoring cluster this year
+        max_cluster_total = max(cluster_totals.values())
+        threshold = THRESHOLD_RATIO * max_cluster_total
+ 
+        records[year] = {
+            cluster: 1 if total >= threshold else 0
+            for cluster, total in cluster_totals.items()
+        }
+ 
     except requests.exceptions.RequestException as e:
-        print(f"An error occurred: {e}")
+        print(f"  Request error for {year}: {e}")
+ 
+# ---------------------------------------------------------------------------
+# Assemble DataFrame
+# ---------------------------------------------------------------------------
+ 
+cluster_names = list(CLUSTERS.keys())
+df = pd.DataFrame.from_dict(records, orient='index')[cluster_names].sort_index()
+df.index.name   = 'year'
+df.columns.name = 'cluster'
 
-for giver, receivers in voting_history.items():
-    for receiver, scores in receivers.items():
-        avg = sum(scores) / len(scores)
-        print(f"{giver} gives an average of {avg:.2f} to {receiver}")
-
-binary_matrix = {}
-
-all_voters = sorted(voting_history.keys())
-
-all_receivers = sorted({
-    receiver
-    for receivers in voting_history.values()
-    for receiver in receivers.keys()
-})
-
-for voter in all_voters:
-    binary_matrix[voter] = {}
-
-    for receiver in all_receivers:
-
-        scores = voting_history[voter].get(receiver, [])
-
-        if scores:
-            avg_score = sum(scores) / len(scores)
-            binary_matrix[voter][receiver] = avg_score >= 8
-        else:
-            binary_matrix[voter][receiver] = False
-
-df = pd.DataFrame.from_dict(binary_matrix, orient="index")
 
 df = df.sort_index(axis=0)
 df = df.sort_index(axis=1)
 
-print(df)
+rows = list(df.index)
+cols = list(df.columns)
 
-df.to_csv("eurovision_binary_context.csv")
+with open("eurovision_binary_context.cxt", "w", encoding="utf-8") as f:
+    f.write("B\n")
+    f.write("\n")
+
+    f.write(f"{len(rows)}\n")
+    f.write(f"{len(cols)}\n")
+    f.write("\n")
+
+    for row in rows:
+        f.write(f"{row}\n")
+
+    for col in cols:
+        f.write(f"{col}\n")
+
+    for row in rows:
+        line = "".join("x" if value else "." for value in df.loc[row])
+        f.write(f"{line}\n")
+
+print("Burmeister .cxt file created: eurovision_binary_context.cxt")
