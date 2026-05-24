@@ -27,7 +27,7 @@ CLUSTERS = {
     'Defunct':               ['YU', 'CS'],
 }
 
-THRESHOLD_RATIO = 0.75
+THRESHOLD_RATIO = 0.8
 
 # ---------------------------------------------------------------------------
 # Voting system: max points a single country can award (to normalise totals)
@@ -95,14 +95,18 @@ for year in range(1957, 2026):
         # Normalised cluster totals: sum of (points / max_pts) per member
         # → each member contributes a value in [0, 1], so cluster totals
         #   are comparable across voting-system eras regardless of scale
-        cluster_totals = {
-            cluster: sum(
-                votes.get(m, 0) / max_pts
-                for m in members
-                if m != winner_country and m in eligible_voters  # ← only eligible voters
-            )
-            for cluster, members in CLUSTERS.items()
-        }
+        cluster_totals = {}
+        for cluster, members in CLUSTERS.items():
+            eligible_members = [
+                m for m in members
+                if m != winner_country and m in eligible_voters
+            ]
+            if not eligible_members:
+                cluster_totals[cluster] = 0.0
+                continue
+            raw = sum(votes.get(m, 0) / max_pts for m in eligible_members)
+            # Normalize by eligible member count so all clusters are on [0, 1]
+            cluster_totals[cluster] = raw / len(eligible_members)
 
         max_cluster_total = max(cluster_totals.values())
         threshold = THRESHOLD_RATIO * max_cluster_total
