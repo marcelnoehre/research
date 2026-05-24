@@ -67,7 +67,9 @@ for year in range(1957, 2026):
         votes = total_score['votes']  # {country_code: points}
  
         # Sum points per cluster
-        winner_country = performance.get('country', '')
+        winner_country = next(
+            (c for c in data['contestants'] if c.get('id') == performance['contestantId']), None
+        )['country']
         cluster_totals = {
             cluster: sum(votes.get(m, 0) for m in members if m != winner_country)
             for cluster, members in CLUSTERS.items()
@@ -77,7 +79,7 @@ for year in range(1957, 2026):
         max_cluster_total = max(cluster_totals.values())
         threshold = THRESHOLD_RATIO * max_cluster_total
  
-        records[year] = {
+        records[f'{winner_country}_{year}'] = {
             cluster: 1 if total >= threshold else 0
             for cluster, total in cluster_totals.items()
         }
