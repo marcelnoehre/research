@@ -1,7 +1,12 @@
 
 import requests
 import pandas as pd
- 
+
+from odis import FormalContext
+import networkx as nx
+from data import Parser
+from fcapy.lattice import ConceptLattice
+
 # ---------------------------------------------------------------------------
 # Cluster definitions
 # ---------------------------------------------------------------------------
@@ -62,8 +67,9 @@ for year in range(1957, 2026):
         votes = total_score['votes']  # {country_code: points}
  
         # Sum points per cluster
+        winner_country = performance.get('country', '')
         cluster_totals = {
-            cluster: sum(votes.get(m, 0) for m in members)
+            cluster: sum(votes.get(m, 0) for m in members if m != winner_country)
             for cluster, members in CLUSTERS.items()
         }
  
@@ -95,7 +101,7 @@ df = df.sort_index(axis=1)
 rows = list(df.index)
 cols = list(df.columns)
 
-with open("eurovision_binary_context.cxt", "w", encoding="utf-8") as f:
+with open("eurovision_binary_context_clustered.cxt", "w", encoding="utf-8") as f:
     f.write("B\n")
     f.write("\n")
 
@@ -113,4 +119,20 @@ with open("eurovision_binary_context.cxt", "w", encoding="utf-8") as f:
         line = "".join("x" if value else "." for value in df.loc[row])
         f.write(f"{line}\n")
 
-print("Burmeister .cxt file created: eurovision_binary_context.cxt")
+
+
+parser = Parser()
+cxt = parser.decode_cxt(f'eurovision_binary_context_clustered.cxt')
+lattice = ConceptLattice.from_context(cxt)
+G = lattice.to_networkx()
+
+for node in G.nodes:
+    print('songs:', lattice.get_concept_new_extent(node))
+
+print('Formal Concepts:', len(G.nodes))
+print('edges:', len(nx.transitive_reduction(G).edges))
+
+ctx = FormalContext.from_file('eurovision_binary_context_clustered.cxt')
+svg = ctx.draw_svg("sugiyama", width=800, height=600)
+with open("esc_clustered.svg", "w") as f:
+    f.write(svg)
