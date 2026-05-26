@@ -1,6 +1,5 @@
 import requests
 import pandas as pd
-
 from odis import FormalContext
 import networkx as nx
 from data import Parser
@@ -11,44 +10,24 @@ from fcapy.lattice import ConceptLattice
 # ---------------------------------------------------------------------------
 
 CLUSTERS = {
-    'Nordic':                ['IS', 'NO', 'SE', 'DK', 'FI'],
-    'British Isles':         ['GB', 'GB-WLS', 'IE'],
-    'Benelux':               ['BE', 'NL', 'LU'],
-    'DACH':                  ['DE', 'AT', 'CH'],
-    'Iberia':                ['PT', 'ES', 'AD'],
-    'Italian Peninsula':     ['IT', 'SM', 'MC'],
-    'Balkans':       ['AL', 'BA', 'HR', 'ME', 'MK', 'RS', 'SI', 'BG', 'RO'],
-    'Visegrad':              ['PL', 'CZ', 'SK', 'HU'],
-    'Baltics':               ['EE', 'LV', 'LT'],
-    'Eastern Europe':        ['RU', 'BY', 'UA', 'MD'],
-    'Caucasus':              ['GE', 'AM', 'AZ'],
-    'Eastern Mediterranean': ['GR', 'CY', 'TR', 'IL', 'MT'],
-    'Non-European':          ['MA', 'KZ', 'AU'],
-    'Defunct':               ['YU', 'CS'],
+    'Northern Europe':   ['IS', 'NO', 'SE', 'DK', 'FI', 'EE', 'LV', 'LT'],
+    'Western Europe':    ['GB', 'GB-WLS', 'IE', 'BE', 'NL', 'LU', 'DE', 'AT', 'CH', 'FR'],
+    'Southern Europe':   ['PT', 'ES', 'AD', 'IT', 'SM', 'MC', 'GR', 'CY', 'MT'],
+    'Eastern Europe':    ['PL', 'CZ', 'SK', 'HU', 'RU', 'BY', 'UA', 'MD'],
+    'Balkans':           ['AL', 'BA', 'HR', 'ME', 'MK', 'RS', 'SI', 'BG', 'RO', 'YU', 'CS'],
+    'Near East & Other': ['TR', 'IL', 'GE', 'AM', 'AZ', 'MA', 'KZ', 'AU'],
 }
 
-THRESHOLD_RATIO = 0.8
+THRESHOLD_RATIO = 0.75
 
 # ---------------------------------------------------------------------------
-# Voting system: max points a single country can award (to normalise totals)
+# Support definition
 # ---------------------------------------------------------------------------
-# 1957–1961: various jury systems, rough max ~10 per country
-# 1962–1963: 3-jury system, each gave 1–3 pts → max ~9; approximate as 10
-# 1964–1966: each country had multiple jury members voting 1–5 → ~10
-# 1967–1970: 10-point scale jury
-# 1971–1974: each country gave a single 10-point vote
-# 1975–2015: 1–8, 10, 12 scale → max 12
-# 2016+    : jury 12 + televote 12 reported separately → max 24
 
-def max_points_per_voter(year: int) -> float:
-    if year <= 1970:
-        return 10.0   # approximate for early variable systems
-    elif year <= 1974:
-        return 10.0
-    elif year <= 2015:
-        return 12.0
-    else:
-        return 24.0   # split jury + tele both reported (combined up to 24)
+def gave_support(country: str, votes: dict, year: int) -> bool:
+    """Return True if the country awarded 8, 10, or 12 points (highlighted on TV)."""
+    pts = votes.get(country, 0)
+    return pts in (8, 10, 12)
 
 # ---------------------------------------------------------------------------
 # Fetch & build matrix
@@ -56,7 +35,7 @@ def max_points_per_voter(year: int) -> float:
 
 records = {}
 
-for year in range(1957, 2026):
+for year in range(1975, 2026):
     if year == 2020:
         continue
 
@@ -83,18 +62,31 @@ for year in range(1957, 2026):
             print(f"  No total score for {year}, skipping.")
             continue
 
-        votes = total_score['votes']  # {country_code: points}
+        if year >= 2016:
+            jury_score = next(
+                (s for s in performance['scores'] if s.get('name') == 'jury'), None
+            )
+            tele_score = next(
+                (s for s in performance['scores'] if s.get('name') == 'public'), None
+            )
+            print(jury_score)
+            print(tele_score)
+            jury_votes = jury_score['votes'] if jury_score else {}
+            tele_votes = tele_score['votes'] if tele_score else {}
+            all_voters = set(jury_votes) | set(tele_votes)
+            votes = {
+                country: max(jury_votes.get(country, 0), tele_votes.get(country, 0))
+                for country in all_voters
+            }
+        else:
+            votes = total_score['votes']
+
         eligible_voters = set(votes.keys())
 
         winner_country = next(
             (c for c in data['contestants'] if c.get('id') == performance['contestantId']), None
         )['country']
 
-        max_pts = max_points_per_voter(year)
-
-        # Normalised cluster totals: sum of (points / max_pts) per member
-        # → each member contributes a value in [0, 1], so cluster totals
-        #   are comparable across voting-system eras regardless of scale
         cluster_totals = {}
         for cluster, members in CLUSTERS.items():
             eligible_members = [
@@ -104,15 +96,11 @@ for year in range(1957, 2026):
             if not eligible_members:
                 cluster_totals[cluster] = 0.0
                 continue
-            raw = sum(votes.get(m, 0) / max_pts for m in eligible_members)
-            # Normalize by eligible member count so all clusters are on [0, 1]
-            cluster_totals[cluster] = raw / len(eligible_members)
-
-        max_cluster_total = max(cluster_totals.values())
-        threshold = THRESHOLD_RATIO * max_cluster_total
+            supporters = sum(1 for m in eligible_members if gave_support(m, votes, year))
+            cluster_totals[cluster] = supporters / len(eligible_members)
 
         records[f'{winner_country}_{year}'] = {
-            cluster: 1 if total >= threshold else 0
+            cluster: 1 if total >= THRESHOLD_RATIO else 0
             for cluster, total in cluster_totals.items()
         }
 
