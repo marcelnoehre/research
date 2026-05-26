@@ -24,7 +24,7 @@ THRESHOLD_RATIO = 0.75
 # Support definition
 # ---------------------------------------------------------------------------
 
-def gave_support(country: str, votes: dict, year: int) -> bool:
+def gave_support(country: str, votes: dict) -> bool:
     """Return True if the country awarded 8, 10, or 12 points (highlighted on TV)."""
     pts = votes.get(country, 0)
     return pts in (8, 10, 12)
@@ -49,18 +49,10 @@ for year in range(1975, 2026):
         final_round = next(
             (r for r in data['rounds'] if r.get('name') == 'final'), None
         )
-        if final_round is None:
-            print(f"  No final round for {year}, skipping.")
-            continue
-
-        performance = final_round['performances'][0]
-
+        performance = final_round['performances'][0] # winner
         total_score = next(
             (s for s in performance['scores'] if s.get('name') == 'total'), None
         )
-        if total_score is None:
-            print(f"  No total score for {year}, skipping.")
-            continue
 
         if year >= 2016:
             jury_score = next(
@@ -69,8 +61,6 @@ for year in range(1975, 2026):
             tele_score = next(
                 (s for s in performance['scores'] if s.get('name') == 'public'), None
             )
-            print(jury_score)
-            print(tele_score)
             jury_votes = jury_score['votes'] if jury_score else {}
             tele_votes = tele_score['votes'] if tele_score else {}
             all_voters = set(jury_votes) | set(tele_votes)
@@ -93,10 +83,13 @@ for year in range(1975, 2026):
                 m for m in members
                 if m != winner_country and m in eligible_voters
             ]
-            if not eligible_members:
+
+            # cluster not represented
+            if not eligible_members: 
                 cluster_totals[cluster] = 0.0
                 continue
-            supporters = sum(1 for m in eligible_members if gave_support(m, votes, year))
+
+            supporters = sum(1 for m in eligible_members if gave_support(m, votes))
             cluster_totals[cluster] = supporters / len(eligible_members)
 
         records[f'{winner_country}_{year}'] = {
@@ -149,5 +142,5 @@ print('edges:', len(nx.transitive_reduction(G).edges))
 
 ctx = FormalContext.from_file('eurovision_binary_context_clustered.cxt')
 svg = ctx.draw_svg("sugiyama", width=800, height=600)
-with open("esc_clustered.svg", "w") as f:
+with open("esc_sugiyama.svg", "w") as f:
     f.write(svg)
