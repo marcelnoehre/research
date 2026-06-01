@@ -48,7 +48,6 @@ COUNTRY_COLORS = {
     "Switzerland":    "#9070d8",
     "Australia":      "#50c8d8",
     "Czech Republic": "#d09050",
-    "Greece":         "#d0d050",
 }
 
 # True geographic centroids (lon, lat) — capital/centroid of country
@@ -63,7 +62,6 @@ GEO = {
     "Switzerland":    ( 7.4,  46.9),   # Bern
     "Australia":      (149.1,-35.3),   # Canberra — off-map, special handling
     "Czech Republic": (14.4,  50.1),   # Prague
-    "Greece":         (23.7,  37.9),   # Athens
 }
 
 # Map extent
@@ -73,17 +71,10 @@ LAT0, LAT1 = 36,  62
 # Layer latitude assignments — two sub-rows for the crowded 2-country layer
 LAYER_LAT = {
     "top":    66.0,   # ALL SONGS
-    1:        59.5,   # 1-country nodes
+    1:        59.5,   # single-country nodes
     "2w":     55.5,   # 2-country, western pairs (centroid lon < 31)
     "2e":     51.5,   # 2-country, eastern pairs
     3:        47.0,   # 3-country concepts
-    4:        43.5,   # 4-country concepts
-    5:        40.5,   # 5-country concepts
-    6:        38.5,   # 6-country concepts
-    7:        36.5,   # 7-country concepts
-    8:        35.0,   # 8-country concepts
-    9:        34.5,   # 9-country concepts
-    10:       34.0,   # 10-country concepts
     "bottom": 33.0,   # ∅ no consensus
 }
 
@@ -107,7 +98,7 @@ SUPPLEMENT = {
 }
 
 
-def build_context(n_countries=10, min_championed_by=3):
+def build_context(n_countries=8, min_championed_by=3):
     def fetch(url, cache):
         if os.path.exists(cache): return pd.read_csv(cache)
         with urllib.request.urlopen(url) as r: data = r.read().decode()
@@ -135,7 +126,7 @@ def build_context(n_countries=10, min_championed_by=3):
     va["recipient_rank"] = va.apply(lambda r: rank_map.get((r.year,r.to_country),np.nan),axis=1)
     va = va.dropna(subset=["recipient_rank"]); va["recipient_rank"]=va["recipient_rank"].astype(int)
 
-    dh = va[(va["points"]>=8)&(va["recipient_rank"]>5)&(va["from_country"]!=va["to_country"])].copy()
+    dh = va[(va["points"]>=10)&(va["recipient_rank"]>5)&(va["from_country"]!=va["to_country"])].copy()
     ny = va.groupby("from_country")["year"].nunique().rename("n_years")
     st = dh.groupby("from_country").agg(dh_votes=("points","count")).join(ny)
     st["dh_rate"]=st["dh_votes"]/st["n_years"]
@@ -145,7 +136,7 @@ def build_context(n_countries=10, min_championed_by=3):
     piv = (dh[dh["from_country"].isin(dhc)]
            .assign(song_id=lambda d: d["year"].astype(str)+" · "+d["to_country"])
            .groupby(["song_id","from_country"])["points"].sum().unstack(fill_value=0))
-    bin_ = (piv>=8).astype(int)
+    bin_ = (piv>=10).astype(int)
     bin_ = bin_[bin_.sum(axis=1)>=2]
     top_c = st[st.index.isin(bin_.columns)].head(n_countries).index.tolist()
     fca = bin_[top_c]
@@ -196,8 +187,7 @@ def assign_layer_key(n_intent, lon_centroid, max_intent):
     if n_intent == 1:           return 1
     if n_intent == 2:
         return "2w" if lon_centroid < GEO_SPLIT else "2e"
-    if n_intent in (3, 4): return n_intent
-    return n_intent
+    return n_intent   # 3, 4, …
 
 
 def compute_pos(G, properties):
@@ -287,22 +277,7 @@ def main():
     pos = compute_pos(G, properties)
 
     print("[4] Map data …")
-    geojson_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "ne_countries.geojson")
-    if not os.path.exists(geojson_path):
-        fallback = "/tmp/ne_countries.geojson"
-        if os.path.exists(fallback):
-            geojson_path = fallback
-        else:
-            print("    Downloading Natural Earth GeoJSON …")
-            import urllib.request
-            urllib.request.urlretrieve(
-                "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/"
-                "master/geojson/ne_50m_admin_0_countries.geojson",
-                fallback
-            )
-            geojson_path = fallback
-    world  = gpd.read_file(geojson_path)
+    world  = gpd.read_file("/tmp/ne_countries.geojson")
     clip   = sbox(LON0-1, LAT0-2, LON1+1, LAT1+2)
     region = world.clip(clip)
 
@@ -477,13 +452,6 @@ def main():
         "2w":     "2 countries\n(western)",
         "2e":     "2 countries\n(eastern)",
         3:        "3 countries",
-        4:        "4 countries",
-        5:        "5 countries",
-        6:        "6 countries",
-        7:        "7 countries",
-        8:        "8 countries",
-        9:        "9 countries",
-        10:       "10 countries",
         "bottom": "NO CONSENSUS",
     }
     sub_layers = defaultdict(list)
