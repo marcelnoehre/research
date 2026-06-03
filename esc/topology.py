@@ -76,11 +76,16 @@ MAX_RETRIES   = 3                          # retries per request on transient fa
 DETECTOR        = "h0"     # "h0" (clusters/blocs) recommended; "h1" (cycles) is noisy
 PERSIST_QUANTILE = 0.65    # keep only features more persistent than this quantile
 MIN_BLOC_SIZE    = 3       # ignore blocs smaller than this many countries
-MERGE_JACCARD    = 0.40    # cross-year blocs merge if membership overlap >= this
-MIN_YEARS_ACTIVE = 3       # drop blocs that appear in fewer than this many years
+MERGE_JACCARD    = 0.55    # cross-year blocs merge if Jaccard similarity >= this
+                           # kept below 0.5 to prevent fine sub-blocs merging with
+                           # coarser parent blocs (fine-4 ⊂ coarse-8 → Jaccard=0.5)
+MAX_BLOC_SIZE    = 18      # drop blocs larger than this (giant coarse clusters obscure structure)
+
+# --- period-based context ---
+PERIODS = [(1975, 2003), (2004, 2025)]   # split at EU enlargement / diaspora-voting shift
 
 # --- output ---
-OUTPUT_BASENAME = "eurovision_era_lattice"
+OUTPUT_BASENAME = "eurovision_country_lattice"
 
 
 # ==================================================================================
@@ -288,17 +293,21 @@ def blocs_from_h1(dist: np.ndarray, countries: List[str]) -> List[frozenset]:
 
 def blocs_from_h0(dist: np.ndarray, countries: List[str]) -> List[frozenset]:
     """
-    DETECTOR == "h0": hierarchical clustering with automatic gap-based cutting.
+    DETECTOR == "h0": hierarchical clustering at TWO scales to create lattice depth.
 
-    Instead of a single persistence-quantile threshold (which tends to produce one
-    giant blob or many singletons), we:
-      1. Run single-linkage hierarchical clustering on the distance matrix.
-      2. Find the largest GAP in the dendrogram merge heights.
-      3. Cut at that gap to get the natural cluster partition.
+    Cuts the dendrogram at two levels:
+      - FINE   (largest gap in the lower half of merge heights) → tight sub-blocs
+      - COARSE (largest gap in the upper half)                  → broader regional
+                                                                  groupings
 
-    This reliably separates densely-connected voting blocs (low internal distance)
-    from the loose cross-bloc noise (high distance), regardless of the absolute
-    scale of the distances.
+    Both levels feed the incidence matrix as separate columns. Because a fine
+    sub-bloc is a strict subset of its coarse parent, FCA builds depth: a year
+    where both levels are active sits *lower* (more constrained) in the Hasse
+    diagram than a year that only shows the coarser grouping.
+
+    Combined with Jaccard-based cross-year merging (see unify_blocs), fine and
+    coarse blocs stay as distinct identities across years instead of collapsing
+    into one.
     """
     from scipy.cluster.hierarchy import linkage, fcluster
     from scipy.spatial.distance import squareform
@@ -307,33 +316,49 @@ def blocs_from_h0(dist: np.ndarray, countries: List[str]) -> List[frozenset]:
     if n < MIN_BLOC_SIZE:
         return []
 
-    # scipy wants condensed distance vector
     condensed = squareform(dist, checks=False)
     Z = linkage(condensed, method='single')      # single-linkage = same as Rips H0
-
-    # merge heights (column 2 of Z)
     heights = Z[:, 2]
 
-    # find the biggest gap in merge heights -> the natural "jump" between
-    # intra-bloc merges (low height) and inter-bloc merges (high height)
-    if len(heights) < 2:
+    if len(heights) < 4:
         return []
-    gaps = np.diff(np.sort(heights))
-    # only consider gaps in the upper portion to avoid cutting too early
-    # (the bottom gaps are noise merges within blocs)
-    n_skip = max(1, len(gaps) // 3)              # skip the bottom third
-    candidate_gaps = gaps[n_skip:]
-    if len(candidate_gaps) == 0:
+
+    sorted_h = np.sort(heights)
+    gaps = np.diff(sorted_h)
+
+    # discard bottom quarter – those are low-noise merges within tight groups
+    n_skip = max(1, len(gaps) // 4)
+    usable = gaps[n_skip:]
+    if len(usable) < 2:
         return []
-    best_gap_idx = n_skip + np.argmax(candidate_gaps)
-    cut_height = (np.sort(heights)[best_gap_idx] + np.sort(heights)[best_gap_idx + 1]) / 2
 
-    labels = fcluster(Z, t=cut_height, criterion='distance')
+    # split usable range into lower half (fine scale) / upper half (coarse scale)
+    mid = len(usable) // 2
+    halves = [(usable[:mid], n_skip), (usable[mid:], n_skip + mid)]
 
-    groups = defaultdict(set)
-    for i, lab in enumerate(labels):
-        groups[lab].add(countries[i])
-    return [frozenset(g) for g in groups.values() if len(g) >= MIN_BLOC_SIZE]
+    cut_heights = []
+    for half, offset in halves:
+        if len(half) == 0:
+            continue
+        best = int(np.argmax(half))
+        abs_idx = offset + best
+        cut_h = (sorted_h[abs_idx] + sorted_h[abs_idx + 1]) / 2
+        cut_heights.append(cut_h)
+
+    if not cut_heights:
+        return []
+
+    all_blocs: set = set()
+    for cut_h in cut_heights:
+        labels = fcluster(Z, t=cut_h, criterion='distance')
+        groups: Dict[int, set] = defaultdict(set)
+        for i, lab in enumerate(labels):
+            groups[lab].add(countries[i])
+        for g in groups.values():
+            if len(g) >= MIN_BLOC_SIZE:
+                all_blocs.add(frozenset(g))
+
+    return list(all_blocs)
 
 
 def extract_blocs(year_data: Dict[int, pd.DataFrame]) -> Dict[int, List[frozenset]]:
@@ -358,22 +383,21 @@ def _jaccard(a: frozenset, b: frozenset) -> float:
     return len(a & b) / len(a | b) if (a | b) else 0.0
 
 
-def _overlap(a: frozenset, b: frozenset) -> float:
-    """Overlap coefficient: |A∩B| / min(|A|,|B|). Tolerant of size differences."""
-    if not a or not b:
-        return 0.0
-    return len(a & b) / min(len(a), len(b))
-
 
 def unify_blocs(per_year: Dict[int, List[frozenset]]
                 ) -> Tuple[pd.DataFrame, Dict[str, frozenset]]:
     """
-    Greedily merge blocs across all years using the OVERLAP coefficient (not
-    Jaccard) so that a 4-country Nordic bloc still matches a slightly-shifted
-    5-country Nordic bloc from the next year. We keep a stable SEED for each
-    canonical bloc (the first instance that created it) and compare new blocs
-    against seeds — NOT against the ever-growing union, which would cause
-    Jaccard to collapse and fragment what should be one stable identity.
+    Greedily merge blocs across all years using JACCARD similarity against a
+    stable SEED (the first instance that created each canonical identity).
+
+    Why Jaccard (not overlap): Jaccard is symmetric and penalises size
+    differences. A fine 4-country sub-bloc vs a coarse 8-country parent bloc
+    scores Jaccard = 4/8 = 0.50, which stays below MERGE_JACCARD = 0.55, so
+    they remain as *separate columns* in the incidence matrix. Overlap would
+    score 1.0 and merge them, destroying the hierarchy.
+
+    Why seed (not running union): comparing against the ever-growing union would
+    inflate denominators over decades and fragment what should be one identity.
 
     Returns:
       * binary DataFrame  rows=year, cols=bloc_label, cell=1 if active that year
@@ -387,7 +411,7 @@ def unify_blocs(per_year: Dict[int, List[frozenset]]
         for b in blocs:
             best, best_o = -1, 0.0
             for k, seed in enumerate(seeds):
-                o = _overlap(b, seed)
+                o = _jaccard(b, seed)
                 if o > best_o:
                     best, best_o = k, o
             if best_o >= MERGE_JACCARD:          # threshold now on overlap coefficient
@@ -431,15 +455,143 @@ def unify_blocs(per_year: Dict[int, List[frozenset]]
 # ==================================================================================
 # 4. FCA  --  build the concept lattice
 # ==================================================================================
+def _multi_level_clusters(Z: np.ndarray, countries: List[str],
+                           n_levels: int = 3) -> List[frozenset]:
+    """
+    Cut the dendrogram at its n_levels largest gaps and collect all clusters
+    from every cut.  Because the cuts are nested in the tree, a tight pair
+    {DK, NO} from the fine cut is always a subset of the medium-cut group
+    {DK, NO, SE, FI, IS}, which is itself a subset of the coarse coalition.
+    These nested attribute sets are what gives FCA the depth to build a
+    proper hierarchy: countries in the tight pair share MORE attributes than
+    countries that only appear at the coarser level.
+    """
+    from scipy.cluster.hierarchy import fcluster
+    heights = Z[:, 2]
+    if len(heights) < 2:
+        return []
+    sorted_h = np.sort(heights)
+    gaps = np.diff(sorted_h)
+    # pick the n_levels widest gaps as cut points (sorted low→high so cuts are ordered)
+    top_idx = np.sort(np.argsort(gaps)[::-1][:n_levels])
+    all_blocs: set = set()
+    for idx in top_idx:
+        cut_h = (sorted_h[idx] + sorted_h[idx + 1]) / 2
+        labels = fcluster(Z, t=cut_h, criterion='distance')
+        groups: Dict[int, set] = defaultdict(set)
+        for i, lab in enumerate(labels):
+            groups[lab].add(countries[i])
+        for g in groups.values():
+            if 2 <= len(g) <= MAX_BLOC_SIZE:
+                all_blocs.add(frozenset(g))
+    return list(all_blocs)
+
+
+def build_period_context(year_data: Dict[int, pd.DataFrame]) -> pd.DataFrame:
+    """
+    Objects = countries.  Attributes = one per (voting cluster, time period).
+
+    For each period in PERIODS, all votes are aggregated across its years and
+    a single hierarchical clustering is run on the resulting distance matrix.
+    Each cluster becomes one attribute whose name encodes both its core
+    members and the era, e.g. "DK+NO+SE… (1990–1999)".
+
+    A country has that attribute iff it was part of that cluster.  Countries
+    that stayed in the same voting group across multiple eras share several
+    attributes and sit deep in the FCA lattice.  Countries that shifted
+    allegiance appear at branching points; newcomers appear high up.  The
+    time periods are embedded in the attribute names, so the rendered diagram
+    shows WHEN each grouping was stable without needing year-objects.
+    """
+    from scipy.cluster.hierarchy import linkage
+    from scipy.spatial.distance import squareform
+
+    attrs: Dict[str, frozenset] = {}
+
+    for (start, end) in PERIODS:
+        label = f"{start}–{end}"
+        frames = [df for y, df in year_data.items() if start <= y <= end]
+        if not frames:
+            continue
+        agg = (pd.concat(frames)
+               .groupby(["from", "to"], as_index=False)["points"].sum())
+        if agg.empty:
+            continue
+
+        dist, countries = year_distance_matrix(agg)
+        if len(countries) < MIN_BLOC_SIZE + 1:
+            continue
+
+        # Ward gives compact balanced clusters; single-linkage chains into one
+        # giant blob when votes are aggregated over many years.
+        Z = linkage(squareform(dist, checks=False), method='ward')
+        blocs = _multi_level_clusters(Z, countries, n_levels=2)
+        for bloc in blocs:
+            core = "+".join(sorted(bloc)[:3])
+            suffix = "…" if len(bloc) > 3 else ""
+            attrs[f"{core}{suffix} ({label})"] = bloc
+        print(f"[period] {label}: {len(blocs)} blocs")
+
+    if not attrs:
+        raise ValueError("No blocs found — check PERIODS covers the data range.")
+
+    all_countries = sorted({c for g in attrs.values() for c in g})
+    mat = pd.DataFrame(0, index=all_countries, columns=list(attrs.keys()), dtype=int)
+    for attr, members in attrs.items():
+        for c in members:
+            mat.loc[c, attr] = 1
+
+    mat = mat.loc[mat.sum(axis=1) > 0, :]
+    mat = mat.loc[:, mat.sum(axis=0) > 0]
+    return mat
+
+
+def build_combined_context(binary: pd.DataFrame,
+                           members: Dict[str, frozenset]) -> pd.DataFrame:
+    """
+    Objects = countries ∪ years, Attributes = stable voting blocs.
+
+    A country has attribute B iff it is a member of bloc B.
+    A year    has attribute B iff bloc B was active that year.
+
+    A concept (extent, intent) therefore reads directly as:
+        "these countries were voting together as {blocs} in {years}"
+
+    Blocs larger than MAX_BLOC_SIZE are excluded so one giant coarse cluster
+    cannot dominate and flatten the lattice.  The dual-scale extraction
+    (fine sub-blocs + coarser coalitions) gives depth: a concept that carries
+    both a fine and a coarse bloc attribute sits lower than one that only
+    carries the coarse one.
+    """
+    filtered = {lab: mem for lab, mem in members.items()
+                if len(mem) <= MAX_BLOC_SIZE and lab in binary.columns}
+
+    country_objects = sorted({c for mem in filtered.values() for c in mem})
+    year_objects    = list(binary.index)          # strings like "1975"
+    objects = country_objects + year_objects
+
+    attrs = list(filtered.keys())
+    mat = pd.DataFrame(0, index=objects, columns=attrs, dtype=int)
+
+    for lab, mem in filtered.items():
+        for c in mem:
+            mat.loc[c, lab] = 1
+
+    for lab in filtered:
+        for y in year_objects:
+            if binary.loc[y, lab] == 1:
+                mat.loc[y, lab] = 1
+
+    mat = mat.loc[mat.sum(axis=1) > 0, :]
+    mat = mat.loc[:, mat.sum(axis=0) > 0]
+    return mat
+
+
 def build_lattice(binary: pd.DataFrame) -> Context:
-    """
-    Objects   = years, Attributes = blocs.
-    A concept (Extent, Intent) is a maximal pairing: a set of years that ALL share
-    exactly the same set of active blocs. Those concepts are the "eras".
-    """
+    """Generic binary incidence matrix → FCA concept lattice."""
     if binary.empty or binary.shape[1] == 0:
         raise ValueError("Empty incidence matrix — no blocs survived filtering. "
-                         "Loosen PERSIST_QUANTILE / MERGE_JACCARD / MIN_YEARS_ACTIVE.")
+                         "Loosen PERSIST_QUANTILE / MERGE_JACCARD / MIN_YEARS_ACTIVE / MAX_BLOC_SIZE.")
     objects = list(binary.index)
     properties = list(binary.columns)
     bools = [tuple(bool(v) for v in row) for row in binary.values]
@@ -457,21 +609,21 @@ def _wrap(items: List[str], per_line: int = 4) -> str:
 
 def render_lattice(ctx: Context, basename: str = OUTPUT_BASENAME) -> str:
     """
-    Render the Hasse diagram with REDUCED LABELLING (the standard FCA convention),
-    so every year/bloc is written exactly once instead of being repeated on every
-    node it belongs to. This is what keeps the diagram readable.
+    Render the Hasse diagram with reduced labelling (standard FCA convention).
 
-      * a BLOC is written at the highest node where it becomes mandatory
-        (intent minus the intents of upper neighbours)  -> shown above the dot, blue
-      * a YEAR is written at the lowest node it reaches
-        (extent minus the extents of lower neighbours)   -> shown below the dot, grey
+    Each object/attribute is written exactly once, at the highest/lowest node
+    where it first appears.  Three visual layers per node (top → bottom):
 
-    Read top->bottom: the top node is the era shared by all years (no constraints);
-    descending an edge ADDS a bloc constraint (a structural pivot); the bottom node
-    is the most constrained, niche regime.
+      BLUE BOLD   — bloc names introduced at this node (intent diff)
+      GREEN       — country names whose unique position is this node (extent diff)
+      GREY ITALIC — year numbers whose unique position is this node (extent diff)
+
+    Read top → bottom: descending an edge ADDS a bloc constraint; ascending
+    relaxes one.  A node that carries both countries and years says "these
+    countries voted together as {blocs} in {years}."
     """
     lattice = ctx.lattice
-    dot = graphviz.Digraph("eras", format="svg")
+    dot = graphviz.Digraph("voting_blocs", format="svg")
     dot.attr(rankdir="TB", bgcolor="white", nodesep="0.5", ranksep="0.9",
              splines="true")
     dot.attr("edge", color="#9aa5b1", arrowhead="none", penwidth="1.2")
@@ -484,15 +636,17 @@ def render_lattice(ctx: Context, basename: str = OUTPUT_BASENAME) -> str:
         for up in c.upper_neighbors:
             own_attrs -= set(up.intent)
 
-        attr_txt = _wrap(sorted(own_attrs), 1)          # blocs: one per line
-        obj_txt  = _wrap(sorted(own_objs), 6)           # years: compact rows
         parts = []
-        if attr_txt:
-            parts.append(f'<FONT COLOR="#1c4f8f"><B>{attr_txt}</B></FONT>')
-        if obj_txt:
-            parts.append(f'<FONT COLOR="#555555" POINT-SIZE="9">{obj_txt}</FONT>')
-        label = "<" + "<BR/>".join(parts).replace("\\n", "<BR/>") + ">" if parts \
-                else "<<FONT COLOR=\"#bbbbbb\">·</FONT>>"
+        if own_attrs:
+            parts.append('<FONT COLOR="#1c4f8f"><B>'
+                         + _wrap(sorted(own_attrs), 1)
+                         + '</B></FONT>')
+        if own_objs:
+            parts.append('<FONT COLOR="#2d6a4f" POINT-SIZE="9">'
+                         + _wrap(sorted(own_objs), 4)
+                         + '</FONT>')
+        label = ("<" + "<BR/>".join(parts).replace("\\n", "<BR/>") + ">"
+                 if parts else '<<FONT COLOR="#bbbbbb">·</FONT>>')
 
         # nodes that introduce a bloc are the structural pivots -> emphasise them
         if own_attrs:
@@ -519,7 +673,7 @@ def render_lattice(ctx: Context, basename: str = OUTPUT_BASENAME) -> str:
 # ==================================================================================
 def main():
     print("=" * 70)
-    print("Eurovision voting-era lattice")
+    print("Eurovision voting-bloc country lattice")
     print("=" * 70)
 
     year_data = fetch_all(YEARS)
@@ -529,31 +683,21 @@ def main():
               "adjust _extract_votes() if needed.")
         return
 
-    per_year = extract_blocs(year_data)
-    binary, members = unify_blocs(per_year)
+    mat = build_period_context(year_data)
+    print(f"\nCountries × period-blocs: "
+          f"{mat.shape[0]} countries × {mat.shape[1]} attributes")
+    print(mat.to_string())
 
-    print("\nYears x Blocs incidence matrix:")
-    print(binary)
+    ctx = build_lattice(mat)
+    n_concepts = len(list(ctx.lattice))
+    print(f"\n[fca] {n_concepts} concepts in the lattice")
 
-    print("\nBloc membership:")
-    for lab, mem in members.items():
-        print(f"  {lab:>20s} : {', '.join(sorted(mem))}")
-
-    ctx = build_lattice(binary)
-    print(f"\n[fca] {len(list(ctx.lattice))} concepts (eras) in the lattice")
-
-    # Interpreting concepts as STRUCTURAL PIVOTS ----------------------------------
-    # Each lattice node groups years that are structurally indistinguishable (same
-    # active blocs). An EDGE between two nodes is a *pivot*: moving down adds a bloc
-    # constraint (a new ring/cluster appears); moving up relaxes one (a bloc dies).
-    # Years that sit alone in a deep node are structural one-offs; long vertical
-    # chains are gradual drift; wide branches are forks into competing regimes.
     for extent, intent in ctx.lattice:
         if extent and intent:
-            print(f"  ERA  years={list(extent)}  defined-by={list(intent)}")
+            print(f"  CONCEPT  {sorted(extent)}  defined-by={sorted(intent)}")
 
-    render_lattice(ctx)
-    print("\nDone. Open eurovision_era_lattice.svg")
+    render_lattice(ctx, "eurovision_country_lattice")
+    print("\nDone. Open eurovision_country_lattice.svg")
 
 
 if __name__ == "__main__":

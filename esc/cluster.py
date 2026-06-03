@@ -10,15 +10,18 @@ from fcapy.lattice import ConceptLattice
 # ---------------------------------------------------------------------------
 
 CLUSTERS = {
-    'Northern Europe':   ['IS', 'NO', 'SE', 'DK', 'FI', 'EE', 'LV', 'LT'],
-    'Western Europe':    ['GB', 'GB-WLS', 'IE', 'BE', 'NL', 'LU', 'DE', 'AT', 'CH', 'FR'],
-    'Southern Europe':   ['PT', 'ES', 'AD', 'IT', 'SM', 'MC', 'GR', 'CY', 'MT'],
-    'Eastern Europe':    ['PL', 'CZ', 'SK', 'HU', 'RU', 'BY', 'UA', 'MD'],
-    'Balkans':           ['AL', 'BA', 'HR', 'ME', 'MK', 'RS', 'SI', 'BG', 'RO', 'YU', 'CS'],
-    'Near East & Other': ['TR', 'IL', 'GE', 'AM', 'AZ', 'MA', 'KZ', 'AU'],
+    'A':   ['CH', 'FI', 'IT'],
+    'B':    ['FR', 'GB', 'IE', 'IL', 'LU', 'NL'],
+    'C':   ['DE', 'DK', 'ES', 'IL', 'IT'],
+    'D':    ['CY', 'GR', 'PT'],
+    'E':           ['EE', 'IE', 'IS', 'SE'],
+    'F': ['HR', 'MT', 'PT', 'SK', 'TR'],
+    'G':    ['BE', 'DE', 'NL'],
+    'H':    ['DK', 'NO', 'SE'],
+    'I':    ['AM', 'BA', 'BG', 'BY', 'GE', 'GR', 'HU', 'MD', 'MK', 'RO', 'RS', 'RU', 'SI', 'TR', 'UA'],
 }
 
-THRESHOLD_RATIO = 0.75
+THRESHOLD_RATIO = 0.9
 
 # ---------------------------------------------------------------------------
 # Support definition
