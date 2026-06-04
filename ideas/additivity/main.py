@@ -1,8 +1,8 @@
 import numpy as np
 from data import Parser
 from fcapy.lattice import ConceptLattice
-from latex import latex_export
-from lectic import *
+from ideas.additivity.latex import latex_export
+from ideas.additivity.lectic import *
 import networkx as nx
 
 file = '121'
