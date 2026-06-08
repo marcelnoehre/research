@@ -4,6 +4,7 @@ from src.realizer import SatRealizer
 from src.cut import *
 from src.refs import *
 from src.find_sublattices import *
+from src.positions import *
 
 file = '3'
 parser = Parser()
@@ -12,6 +13,8 @@ lat = ConceptLattice.from_context(cxt)
 G = nx.transitive_reduction(lat.to_networkx())
 
 anchors, parts = parts_as_lattices(G, lat)
+
+positions = {}
 
 print(f"anchors (top -> bottom): {anchors}\n")
 print(f"{len(parts)} part(s):")
@@ -22,7 +25,16 @@ for a, b, region, sub_lat, index_map in parts:
     print(f"    index_map: {index_map}")
     print(f"    sub_lat:   {len(sub_lat)} concepts")
 
-    realizer = SatRealizer(sub_lat)
-    print(realizer.realizer())
+    sat_realizer = SatRealizer(sub_lat)
+    
+    dim, realizer = sat_realizer.realizer()
 
-    print(find_sublattice(sub_lat.to_networkx(), N5_ref))
+    if dim == 1:
+        chain_positions = total_ordering(realizer)
+        # todo append chain positions based on the lower cut element if not bot
+    elif dim == 2:
+        find_sublattice(sub_lat.to_networkx(), N5_ref)
+    elif dim == 3:
+        find_sublattice(sub_lat.to_networkx(), B3_ref)
+    else:
+        raise ValueError('Not implemented')
