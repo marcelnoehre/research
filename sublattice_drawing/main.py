@@ -2,6 +2,8 @@ from data import Parser
 from fcapy.lattice import ConceptLattice
 from src.realizer import SatRealizer
 from src.cut import *
+from src.refs import *
+from src.find_sublattices import *
 
 file = '3'
 parser = Parser()
@@ -22,3 +24,5 @@ for a, b, region, sub_lat, index_map in parts:
 
     realizer = SatRealizer(sub_lat)
     print(realizer.realizer())
+
+    print(find_sublattice(sub_lat.to_networkx(), N5_ref))

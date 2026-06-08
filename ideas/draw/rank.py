@@ -2,10 +2,10 @@ from data import Parser
 from fcapy.lattice import ConceptLattice
 import networkx as nx
 
-i = 'Forum-Romanum'
+i = '58'
 print(f'### {i} ###')
 parser = Parser()
-cxt = parser.decode_cxt(f'../data/{i}.cxt')
+cxt = parser.decode_cxt(f'../../data/{i}.cxt')
 lat = ConceptLattice.from_context(cxt)
 G = nx.transitive_reduction(lat.to_networkx())
 
