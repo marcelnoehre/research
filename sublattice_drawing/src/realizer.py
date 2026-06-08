@@ -45,7 +45,7 @@ class SatRealizer:
                 List of linear extensions forming the realizer.
         '''
         if self.N_incomparable == 0:
-            return 1, [list(nx.topological_sort(self.graph))]
+            return 1, [list(reversed(list(nx.topological_sort(self.graph))))]
 
         # setup clauses for SAT solver
         self._setup_incomparability_clauses()
@@ -157,6 +157,6 @@ class SatRealizer:
                     le.add_edge(b, a)
 
             # topological sort gives the linear extension
-            realizer.append(list(nx.topological_sort(le)))
+            realizer.append(list(reversed(list(nx.topological_sort(le)))))
 
         return realizer

@@ -89,10 +89,11 @@ def parts_as_lattices(G, lat):
     enriched = []
     for a, b, region in parts:
         region_topo = [v for v in topo if v in region]
-        index_map = {v: i for i, v in enumerate(region_topo)}
+        index_map = {i: v for i, v in enumerate(region_topo)}
+        orig_to_local = {v: i for i, v in index_map.items()}
 
         children_dict = {
-            index_map[v]: [index_map[w] for w in G.successors(v) if w in region]
+            orig_to_local[v]: [orig_to_local[w] for w in G.successors(v) if w in region]
             for v in region
         }
         sub_lat = ConceptLattice(

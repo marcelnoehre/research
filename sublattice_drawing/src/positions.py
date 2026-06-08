@@ -1,5 +1,5 @@
-def total_ordering(realizer):
+def total_ordering(realizer) -> dict:
     return {
-        node: (0, i)
-        for i, node in enumerate(realizer)
+        node: (0, float(i))
+        for i, node in enumerate(realizer[0])
     }
