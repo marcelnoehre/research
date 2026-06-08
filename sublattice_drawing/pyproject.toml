@@ -1,0 +1,13 @@
+[project]
+name = "sublattice_drawing"
+version = "0.1.0"
+description = "Drawing lattice by their sublattices"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fca-utils",
+    "fcapy>=0.1.4.5",
+]
+
+[tool.uv.sources]
+fca-utils = { git = "https://github.com/marcelnoehre/fca-utils.git" }
