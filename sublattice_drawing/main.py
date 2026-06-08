@@ -1,8 +1,9 @@
 from data import Parser
 from fcapy.lattice import ConceptLattice
+from src.realizer import SatRealizer
 from src.cut import *
 
-file = '7'
+file = '3'
 parser = Parser()
 cxt = parser.decode_cxt(f'../data/{file}.cxt')
 lat = ConceptLattice.from_context(cxt)
@@ -18,3 +19,6 @@ for a, b, region, sub_lat, index_map in parts:
     print(f"    region:    {sorted(region, key=str)}")
     print(f"    index_map: {index_map}")
     print(f"    sub_lat:   {len(sub_lat)} concepts")
+
+    realizer = SatRealizer(sub_lat)
+    print(realizer.realizer())
