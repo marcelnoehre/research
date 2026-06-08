@@ -6,7 +6,7 @@ from src.refs import *
 from src.find_sublattices import *
 from src.positions import *
 
-file = '1'
+file = '2'
 parser = Parser()
 cxt = parser.decode_cxt(f'../data/{file}.cxt')
 lat = ConceptLattice.from_context(cxt)
@@ -33,6 +33,8 @@ for a, b, region, sub_lat, index_map in reversed(parts):
     if dim == 1:
         new_positions = total_ordering(realizer)
     elif dim == 2:
+        print(all_maximal_chains(sub_lat.to_networkx()))
+
         find_sublattice(sub_lat.to_networkx(), N5_ref)
     elif dim == 3:
         find_sublattice(sub_lat.to_networkx(), B3_ref)
