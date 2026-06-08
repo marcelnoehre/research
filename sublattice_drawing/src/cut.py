@@ -71,3 +71,34 @@ def find_anchor_pairs(G):
     return anchors, parts
 
 
+def parts_as_lattices(G, lat):
+    """
+    Return (anchors, enriched_parts).
+
+    enriched_parts: list of (a, b, region, sub_lat, index_map) where
+      sub_lat   -- ConceptLattice for the concepts in this region, with
+                   local indices 0, 1, ..., len(region)-1.
+      index_map -- dict mapping original concept index (node id in G) to the
+                   new local index, assigned in topological order of G.
+    """
+    from fcapy.lattice import ConceptLattice
+
+    anchors, parts = find_anchor_pairs(G)
+    topo = list(nx.topological_sort(G))
+
+    enriched = []
+    for a, b, region in parts:
+        region_topo = [v for v in topo if v in region]
+        index_map = {v: i for i, v in enumerate(region_topo)}
+
+        children_dict = {
+            index_map[v]: [index_map[w] for w in G.successors(v) if w in region]
+            for v in region
+        }
+        sub_lat = ConceptLattice(
+            [lat[v] for v in region_topo],
+            children_dict=children_dict,
+        )
+        enriched.append((a, b, region, sub_lat, index_map))
+
+    return anchors, enriched
