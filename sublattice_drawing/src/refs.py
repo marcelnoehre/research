@@ -1,8 +1,11 @@
 import networkx as nx
 
-N5_ref = nx.DiGraph()
-N5_ref.add_edges_from([
-    ('bot', 'a'), ('bot', 'b'), ('b', 'c'), ('a', 'top'), ('c', 'top')
+S7_ref = nx.DiGraph()
+S7_ref.add_edges_from([
+    ('top', 'a'), ('top', 'b'),  ('top', 'c'),
+    ('b', 'd'), ('b', 'e'),
+    ('a', 'd'), ('c', 'e'), 
+    ('d', 'bot'), ('e', 'bot')
 ])
 
 B3_ref = nx.DiGraph()

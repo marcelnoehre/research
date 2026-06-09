@@ -6,7 +6,7 @@ from src.refs import *
 from src.find_sublattices import *
 from src.positions import *
 
-file = '2'
+file = '8'
 parser = Parser()
 cxt = parser.decode_cxt(f'../data/{file}.cxt')
 lat = ConceptLattice.from_context(cxt)
@@ -29,13 +29,20 @@ for a, b, region, sub_lat, index_map in reversed(parts):
     sat_realizer = SatRealizer(sub_lat)
     
     dim, realizer = sat_realizer.realizer()
+    print(realizer)
+    ranks = {}
 
     if dim == 1:
         new_positions = total_ordering(realizer)
     elif dim == 2:
-        print(all_maximal_chains(sub_lat.to_networkx()))
+        s7 = find_sublattice(sub_lat.to_networkx(), S7_ref)
+        if s7:
+            new_positions = S7_positions(s7, realizer)
 
-        find_sublattice(sub_lat.to_networkx(), N5_ref)
+        print(all_maximal_chains(sub_lat.to_networkx()))
+        print(parallel_intervals(sub_lat.to_networkx()))
+
+        
     elif dim == 3:
         find_sublattice(sub_lat.to_networkx(), B3_ref)
     else:
@@ -48,5 +55,7 @@ for a, b, region, sub_lat, index_map in reversed(parts):
 
 import matplotlib.pyplot as plt
 
-nx.draw(G, pos=positions, with_labels=True, node_color='lightblue', arrows=True)
+fig, ax = plt.subplots()
+ax.set_aspect('equal')
+nx.draw(G, pos=positions, with_labels=True, node_color='lightblue', arrows=True, ax=ax)
 plt.show()
