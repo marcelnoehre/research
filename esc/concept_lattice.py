@@ -1,3 +1,10 @@
+import requests
+import pandas as pd
+from odis import FormalContext
+import networkx as nx
+from data import Parser
+from fcapy.lattice import ConceptLattice
+
 POLITICAL_CLUSTERS = {
     'European Union':  ['AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR', 'DE', 'GR', 'HU', 'IE', 'IT', 'LV', 'LT', 'LU', 'MT', 'NL', 'PL', 'PT', 'RO', 'SK', 'SI', 'ES', 'SE'],
     'EU Candidates':   ['AL', 'BA', 'GE', 'MD', 'ME', 'MK', 'RS', 'TR', 'UA'],
@@ -105,3 +112,59 @@ COUNTRIES = {
     'GB-WLS': 'Wales',
     'YU': 'Yugoslavia'
 }
+
+records = {}
+
+for year in range(1975, 2026):
+    if year == 2020:
+        continue
+
+    try:
+        print(year)
+        url = f'https://eurovisionapi.runasp.net/api/senior/contests/{year}'
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+
+        final_round = next(
+            (r for r in data['rounds'] if r.get('name') == 'final'), None
+        )
+        performance = final_round['performances'][0] # winner
+
+        if year >= 2016:
+            jury_score = next(
+                (s for s in performance['scores'] if s.get('name') == 'jury'), None
+            )
+            tele_score = next(
+                (s for s in performance['scores'] if s.get('name') == 'public'), None
+            )
+            jury_votes = jury_score['votes'] if jury_score else {}
+            tele_votes = tele_score['votes'] if tele_score else {}
+            all_voters = set(jury_votes) | set(tele_votes)
+            votes = {
+                country: max(jury_votes.get(country, 0), tele_votes.get(country, 0))
+                for country in all_voters
+            }
+        else:
+            total_score = next(
+                (s for s in performance['scores'] if s.get('name') == 'total'), None
+            )
+            votes = total_score['votes']
+
+        eligible_voters = set(votes.keys())
+
+        winner_country = next(
+            (c for c in data['contestants'] if c.get('id') == performance['contestantId']), None
+        )['country']
+
+        print(winner_country)
+        regional_cluster = next((k for k, v in REGIONAL_CLUSTERS.items()  if winner_country in v), None)
+        cultural_cluster = next((k for k, v in CULTURAL_CLUSTERS.items()  if winner_country in v), None)
+        historical_cluster = next((k for k, v in HISTORICAL_CLUSTERS.items() if winner_country in v), None)
+        political_cluster = next((k for k, v in POLITICAL_CLUSTERS.items() if winner_country in v), None)
+        print(regional_cluster, cultural_cluster, historical_cluster, political_cluster)
+
+
+
+    except requests.exceptions.RequestException as e:
+        print(f"  Request error for {year}: {e}")
