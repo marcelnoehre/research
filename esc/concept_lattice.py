@@ -141,11 +141,7 @@ for year in range(1975, 2026):
             )
             jury_votes = jury_score['votes'] if jury_score else {}
             tele_votes = tele_score['votes'] if tele_score else {}
-            all_voters = set(jury_votes) | set(tele_votes)
-            votes = {
-                country: max(jury_votes.get(country, 0), tele_votes.get(country, 0))
-                for country in all_voters
-            }
+            votes = jury_votes if sum(jury_votes.values()) >= sum(tele_votes.values()) else tele_votes
         else:
             total_score = next(
                 (s for s in performance['scores'] if s.get('name') == 'total'), None
