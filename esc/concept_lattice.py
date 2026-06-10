@@ -43,17 +43,17 @@ CULTURAL_CLUSTERS = {
 }
 
 REGIONAL_CLUSTERS = {
-    'British Isles':    ['GB', 'GB-WLS', 'IE'],
-    'Scandinavia':      ['DK', 'FI', 'IS', 'NO', 'SE'],
-    'Baltic States':    ['EE', 'LV', 'LT'],
-    'Benelux':          ['BE', 'NL', 'LU'],
-    'Iberian Peninsula':['AD', 'ES', 'PT'],
-    'Central Europe':   ['AT', 'CH', 'DE', 'FR', 'MC'],
-    'Mediterranean':    ['CY', 'GR', 'IT', 'MT', 'SM'],
-    'Balkans':          ['AL', 'BA', 'CS', 'HR', 'ME', 'MK', 'RS', 'SI', 'TR', 'YU'],
-    'Eastern Europe':   ['BY', 'BG', 'CZ', 'HU', 'MD', 'PL', 'RO', 'RU', 'SK', 'UA'],
-    'Caucasus':         ['AM', 'AZ', 'GE'],
-    'Non-European':     ['AU', 'IL', 'KZ', 'MA'],
+    'British Isles':     ['GB', 'GB-WLS', 'IE'],
+    'Scandinavia':       ['DK', 'FI', 'IS', 'NO', 'SE'],
+    'Baltic States':     ['EE', 'LV', 'LT'],
+    'Benelux':           ['BE', 'NL', 'LU'],
+    'Iberian Peninsula': ['AD', 'ES', 'FR', 'PT'],
+    'Central Europe':    ['AT', 'CH', 'CZ', 'DE', 'HU', 'PL', 'SK'], 
+    'Mediterranean':     ['CY', 'IT', 'MC', 'MT', 'SM'],
+    'Balkans':           ['AL', 'BA', 'CS', 'GR', 'HR', 'ME', 'MK', 'RS', 'SI', 'TR', 'YU'],
+    'Eastern Europe':    ['BY', 'BG', 'MD', 'RO', 'RU', 'UA'],
+    'Caucasus':          ['AM', 'AZ', 'GE'],
+    'Non-European':      ['AU', 'IL', 'KZ', 'MA'],
 }
 
 COUNTRIES = {
