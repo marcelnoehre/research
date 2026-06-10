@@ -6,24 +6,26 @@ from data import Parser
 from fcapy.lattice import ConceptLattice
 
 POLITICAL_CLUSTERS = {
-    'European Union':  ['AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR', 'DE', 'GR', 'HU', 'IE', 'IT', 'LV', 'LT', 'LU', 'MT', 'NL', 'PL', 'PT', 'RO', 'SK', 'SI', 'ES', 'SE'],
-    'EU Candidates':   ['AL', 'BA', 'GE', 'MD', 'ME', 'MK', 'RS', 'TR', 'UA'],
-    'EFTA / EEA':      ['CH', 'IS', 'NO'],
-    'Post-Brexit':     ['GB', 'GB-WLS'],
-    'Authoritarian':   ['AZ', 'BY', 'KZ', 'RU'],
-    'Non-aligned':     ['AD', 'AM', 'MC', 'SM'],
-    'Non-European':    ['AU', 'IL', 'MA'],
-    'Defunct States':  ['CS', 'YU'],
+    'EU Eurozone':           ['AT', 'BE', 'BG', 'HR', 'CY', 'EE', 'FI', 'FR', 'DE', 'GR',
+                                'IE', 'IT', 'LV', 'LT', 'LU', 'MT', 'NL', 'PT', 'SK', 'SI', 'ES'],
+    'EU Non-Eurozone':       ['CZ', 'DK', 'HU', 'PL', 'RO', 'SE'],
+    'EU Candidates':           ['AL', 'BA', 'GE', 'MD', 'ME', 'MK', 'RS', 'TR', 'UA'],
+    'EFTA / EEA':              ['CH', 'IS', 'NO'],
+    'Post-Brexit':             ['GB', 'GB-WLS'],
+    'Eurasian Economic Union': ['AM', 'BY', 'KZ', 'RU'],
+    'Non-aligned':             ['AD', 'AZ', 'MC', 'SM'],
+    'Non-European':            ['AU', 'IL', 'MA'],
+    'Defunct States':          ['CS', 'YU'],
 }
 
 HISTORICAL_CLUSTERS = {
-    'Former Soviet Union':    ['AM', 'AZ', 'BY', 'EE', 'GE', 'KZ', 'LV', 'LT', 'MD', 'RU', 'UA'],
-    'Former Yugoslavia':      ['BA', 'CS', 'HR', 'ME', 'MK', 'RS', 'SI', 'YU'],
-    'Former Eastern Bloc':    ['AL', 'BG', 'CZ', 'HU', 'PL', 'RO', 'SK'],
-    'Western Bloc':           ['BE', 'DE', 'DK', 'ES', 'FR', 'GB', 'GB-WLS', 'GR', 'IS', 'IT', 'LU', 'NL', 'NO', 'PT', 'TR'],
-    'Neutral':                ['AT', 'CH', 'FI', 'IE', 'SE'],
-    'Mediterranean & Microstates': ['AD', 'CY', 'MC', 'MT', 'SM'],
-    'Non-European':           ['AU', 'IL', 'MA'],
+    'Former Soviet Union':         ['AM', 'AZ', 'BY', 'EE', 'GE', 'KZ', 'LV', 'LT', 'MD', 'RU', 'UA'],
+    'Former Yugoslavia':           ['BA', 'CS', 'HR', 'ME', 'MK', 'RS', 'SI', 'YU'],
+    'Former Eastern Bloc':         ['AL', 'BG', 'CZ', 'HU', 'PL', 'RO', 'SK'],
+    'Western Bloc (NATO/aligned)': ['AU', 'BE', 'DE', 'DK', 'ES', 'FR', 'GB', 'GB-WLS',
+                                    'GR', 'IL', 'IS', 'IT', 'LU', 'NL', 'NO', 'PT', 'TR'],
+    'Neutral':                     ['AD', 'AT', 'CH', 'FI', 'IE', 'MC', 'SE', 'SM'],
+    'Non-Aligned Movement':        ['CY', 'MA', 'MT'],
 }
 
 CULTURAL_CLUSTERS = {
