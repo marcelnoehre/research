@@ -164,7 +164,91 @@ for year in range(1975, 2026):
         political_cluster = next((k for k, v in POLITICAL_CLUSTERS.items() if winner_country in v), None)
         print(regional_cluster, cultural_cluster, historical_cluster, political_cluster)
 
+        eligible_regional_members = [
+            m for m in REGIONAL_CLUSTERS[regional_cluster]
+            if m != winner_country and m in eligible_voters
+        ]
+        avg_regional_pts = 0.0
+        if eligible_regional_members:
+            avg_regional_pts = sum(votes.get(m, 0) for m in eligible_regional_members) / len(eligible_regional_members)
+        regional_support = avg_regional_pts >= 8
 
+        eligible_cultural_members = [
+            m for m in CULTURAL_CLUSTERS[cultural_cluster]
+            if m != winner_country and m in eligible_voters
+        ]
+        avg_cultural_pts = 0.0
+        if eligible_cultural_members:
+            avg_cultural_pts = sum(votes.get(m, 0) for m in eligible_cultural_members) / len(eligible_cultural_members)
+        cultural_support = avg_cultural_pts >= 8
+
+        eligible_historical_members = [
+            m for m in HISTORICAL_CLUSTERS[historical_cluster]
+            if m != winner_country and m in eligible_voters
+        ]
+        avg_historical_pts = 0.0
+        if eligible_historical_members:
+            avg_historical_pts = sum(votes.get(m, 0) for m in eligible_historical_members) / len(eligible_historical_members)
+        historical_support = avg_historical_pts >= 8
+
+        eligible_political_members = [
+            m for m in POLITICAL_CLUSTERS[political_cluster]
+            if m != winner_country and m in eligible_voters
+        ]
+        avg_political_pts = 0.0
+        if eligible_political_members:
+            avg_political_pts = sum(votes.get(m, 0) for m in eligible_political_members) / len(eligible_political_members)
+        political_support = avg_political_pts >= 8
+
+        print(regional_support, cultural_support, historical_support, political_support)
+
+        records[f'{winner_country}_{year}'] = {
+            'regional': regional_support,
+            'cultural': cultural_support,
+            'historical': historical_support,
+            'political': political_support
+        }
 
     except requests.exceptions.RequestException as e:
         print(f"  Request error for {year}: {e}")
+
+support = ['regional','cultural','historical','political']
+df = pd.DataFrame.from_dict(records, orient='index')[support].sort_index()
+df.index.name   = 'year'
+df.columns.name = 'support'
+
+df = df.sort_index(axis=0)
+df = df.sort_index(axis=1)
+
+rows = list(df.index)
+cols = list(df.columns)
+
+with open("eurovision_support.cxt", "w", encoding="utf-8") as f:
+    f.write("B\n")
+    f.write("\n")
+    f.write(f"{len(rows)}\n")
+    f.write(f"{len(cols)}\n")
+    f.write("\n")
+    for row in rows:
+        f.write(f"{row}\n")
+    for col in cols:
+        f.write(f"{col}\n")
+    for row in rows:
+        line = "".join("x" if value else "." for value in df.loc[row])
+        f.write(f"{line}\n")
+
+parser = Parser()
+cxt = parser.decode_cxt('eurovision_support.cxt')
+lattice = ConceptLattice.from_context(cxt)
+G = lattice.to_networkx()
+
+for node in G.nodes:
+    print('songs:', lattice.get_concept_new_extent(node))
+
+print('Formal Concepts:', len(G.nodes))
+print('edges:', len(nx.transitive_reduction(G).edges))
+
+ctx = FormalContext.from_file('eurovision_support.cxt')
+svg = ctx.draw_svg("sugiyama", width=800, height=600)
+with open("esc_sugiyama.svg", "w") as f:
+    f.write(svg)
