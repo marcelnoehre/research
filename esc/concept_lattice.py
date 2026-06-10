@@ -249,6 +249,6 @@ print('Formal Concepts:', len(G.nodes))
 print('edges:', len(nx.transitive_reduction(G).edges))
 
 ctx = FormalContext.from_file('eurovision_support.cxt')
-svg = ctx.draw_svg("sugiyama", width=800, height=600)
-with open("esc_sugiyama.svg", "w") as f:
+svg = ctx.draw_svg("dimdraw", width=800, height=600)
+with open("esc_dimdraw.svg", "w") as f:
     f.write(svg)
