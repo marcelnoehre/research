@@ -27,19 +27,18 @@ HISTORICAL_CLUSTERS = {
 }
 
 CULTURAL_CLUSTERS = {
-    'Anglophone':   ['AU', 'GB', 'GB-WLS', 'IE'],
-    'Nordic':       ['DK', 'IS', 'NO', 'SE'],
-    'Finno-Ugric':  ['EE', 'FI', 'HU'],
-    'Germanic':     ['AT', 'BE', 'CH', 'DE', 'LU', 'NL'],
-    'Romance':      ['AD', 'FR', 'IT', 'MC', 'MD', 'MT', 'PT', 'RO', 'SM', 'ES'],
-    'Baltic':       ['LV', 'LT'],
-    'West Slavic':  ['CZ', 'PL', 'SK'],
-    'East Slavic':  ['BY', 'RU', 'UA'],
-    'Balkan':       ['AL', 'BA', 'BG', 'CS', 'HR', 'ME', 'MK', 'RS', 'SI', 'YU'],
-    'Hellenic':     ['CY', 'GR'],
-    'Turkic':       ['AZ', 'KZ', 'TR'],
-    'Caucasian':    ['AM', 'GE'],
-    'Semitic':      ['IL', 'MA'],
+    'Anglophone':          ['AU', 'GB', 'GB-WLS', 'IE'],
+    'Nordic':              ['DK', 'FI', 'IS', 'NO', 'SE'],
+    'Baltic':              ['EE', 'LV', 'LT'],
+    'Germanic':            ['AT', 'BE', 'CH', 'DE', 'LU', 'NL'],
+    'Romance':             ['AD', 'FR', 'IT', 'MC', 'MD', 'MT', 'PT', 'RO', 'SM', 'ES'],
+    'East-Central Europe': ['CZ', 'HU', 'PL', 'SK', 'SI', 'HR'],
+    'East Slavic':         ['BY', 'RU', 'UA'],
+    'Balkan':              ['AL', 'BA', 'BG', 'CS', 'ME', 'MK', 'RS', 'YU'],
+    'Hellenic':            ['CY', 'GR'],
+    'Turkic':              ['AZ', 'KZ', 'TR'],
+    'Caucasian':           ['AM', 'GE'],
+    'Semitic':             ['IL', 'MA'],
 }
 
 REGIONAL_CLUSTERS = {
