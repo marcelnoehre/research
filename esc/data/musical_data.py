@@ -33,23 +33,25 @@ for i, cluster in enumerate(CLUSTERS):
             response.raise_for_status()
             data = response.json()
 
+            is_solo_act = len(data['artistPeople']) == 1
             is_fast = data['bpm'] > 116
             is_major = 'major' in data['tone']
             has_backings = data['backings'] is not None
-            has_dancers = data['dancers'] is not None
+            has_dancers = data['dancers'] is None
             is_english = data['lyrics'][0]['languages'][0] == 'english'
             records[year] = {
+                'is_solo_act': is_solo_act,
                 'is_fast': is_fast,
                 'is_major': is_major,
-                'has_backings': has_backings,
-                'has_dancers': has_dancers,
+                # 'has_backings': has_backings,
+                'no_dancers': has_dancers,
                 'is_english': is_english
             }
 
         except requests.exceptions.RequestException as e:
             print(f"  Request error for {year}: {e}")
 
-    support = ['is_fast','is_major','has_backings','has_dancers', 'is_english']
+    support = ['is_solo_act', 'is_fast','is_major','no_dancers', 'is_english']
     df = pd.DataFrame.from_dict(records, orient='index')[support].sort_index()
     df.index.name   = 'year'
     df.columns.name = 'support'
