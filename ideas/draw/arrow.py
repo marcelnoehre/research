@@ -27,7 +27,6 @@ through `to_pandas`, matching the original pipeline.
 
 from itertools import product
 import pandas as pd
-from data import Parser
 
 try:
     from fcapy.context.converters import to_pandas  # noqa: F401
@@ -228,8 +227,21 @@ def atlas_decomposition(cxt, seed=None, lattice=None):
     res["lattice"] = lattice
     return res
 
+
+def chart_overlap(res, i, j):
+    """Shared concept indices of charts i and j (their gluing). An interval, hence a lattice."""
+    return sorted(set(res["charts"][i]["concepts"]) & set(res["charts"][j]["concepts"]))
+
+
+def gluings(res):
+    """{(i, j): shared concept indices} for every glued (covering) pair of charts."""
+    return {(i, j): chart_overlap(res, i, j) for i, j in res["chart_covers"]}
+
+
 if __name__ == "__main__":
-    file = '../../data/6'
+    from data import Parser
+
+    file = '../../data/5'
     ctx = Parser().decode_cxt(f'{file}.cxt')
     df = to_pandas(ctx).astype(bool)
 
@@ -247,3 +259,7 @@ if __name__ == "__main__":
         print(f'    interval: {ch["lower"]}  ->  {ch["upper"]}')
         print(f'    concepts (indices): {ch["concepts"]}')
         print(f'    concepts (extents): {[e for e, _ in ch["concept_tuples"]]}')
+
+    print('\n  gluings (shared concepts per glued pair):')
+    for (i, j), shared in gluings(res).items():
+        print(f'    charts {i} & {j}: {shared}')
