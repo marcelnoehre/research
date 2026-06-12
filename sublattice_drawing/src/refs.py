@@ -1,4 +1,13 @@
+import numpy as np
 import networkx as nx
+
+CANONICAL_ANGLES = [
+    0.0,
+    np.degrees(np.arctan(4/5)),   # ~38.66
+    45.0,
+    np.degrees(np.arctan(3/2)),   # ~56.31
+    90.0,
+]
 
 S7_ref = nx.DiGraph()
 S7_ref.add_edges_from([

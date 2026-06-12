@@ -39,8 +39,13 @@ for a, b, region, sub_lat, index_map in reversed(parts):
         if s7:
             new_positions = S7_positions(s7, realizer)
 
-        print(all_maximal_chains(sub_lat.to_networkx()))
-        print(parallel_intervals(sub_lat.to_networkx()))
+        intervals = parallel_intervals(sub_lat.to_networkx())
+        if len(intervals.keys()) == 1: # chains that only meet at top and bot
+            new_positions = simple_chain_positions(intervals)
+
+        print(new_positions)
+
+        # print(all_maximal_chains(sub_lat.to_networkx()))
 
         
     elif dim == 3:
