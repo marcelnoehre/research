@@ -38,6 +38,6 @@ def parallel_intervals(G):
             for j in range(i + 2, len(chain) + 1):
                 sub = tuple(chain[i:j])
                 key = (sub[0], sub[-1])
-                groups.setdefault(key, set()).add(sub)
+                groups.setdefault(key, set()).add(reversed(sub))
     groups = {k: [list(p) for p in v] for k, v in groups.items() if len(v) > 1}
     return dict(sorted(groups.items(), key=lambda kv: len(kv[1]), reverse=True))
