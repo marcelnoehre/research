@@ -5,8 +5,9 @@ from src.cut import *
 from src.refs import *
 from src.find_sublattices import *
 from src.positions import *
+from src.atlas import atlas_decomposition
 
-file = '8'
+file = '18'
 parser = Parser()
 cxt = parser.decode_cxt(f'../data/{file}.cxt')
 lat = ConceptLattice.from_context(cxt)
@@ -25,6 +26,8 @@ for a, b, region, sub_lat, index_map in reversed(parts):
     print(f"    region:    {sorted(region, key=str)}")
     print(f"    index_map: {index_map}")
     print(f"    sub_lat:   {len(sub_lat)} concepts")
+
+    print(atlas_decomposition(sub_lat.to_networkx()))
 
     sat_realizer = SatRealizer(sub_lat)
     

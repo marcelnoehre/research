@@ -71,7 +71,6 @@ COUNTRIES = {
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 
 CLUSTER_COLORS = {
     'British Isles':     '#c0392b',  # crimson
@@ -108,13 +107,21 @@ country_to_cluster = {
     if code in ISO2_TO_ISO3
 }
 
-_shp = '/home/mno/Documents/kde/research/.venv/lib/python3.12/site-packages/pyogrio/tests/fixtures/naturalearth_lowres/naturalearth_lowres.shp'
+import os, zipfile, urllib.request, io as _io
+
+_cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ne_50m_cache')
+_shp = os.path.join(_cache_dir, 'ne_50m_admin_0_countries.shp')
+if not os.path.exists(_shp):
+    os.makedirs(_cache_dir, exist_ok=True)
+    _url = 'https://naciscdn.org/naturalearth/50m/cultural/ne_50m_admin_0_countries.zip'
+    with urllib.request.urlopen(_url) as _r:
+        with zipfile.ZipFile(_io.BytesIO(_r.read())) as _z:
+            _z.extractall(_cache_dir)
+
 world = gpd.read_file(_shp)
-# clip to ESC-relevant extent — excludes Americas/Pacific overseas territories
+world = world[['ISO_A3_EH', 'NAME', 'geometry']].rename(
+    columns={'ISO_A3_EH': 'iso_a3', 'NAME': 'name'})
 world = world.clip([-35, -50, 180, 82])
-# fix known -99 iso_a3 entries in this dataset
-_name_fixes = {'France': 'FRA', 'Norway': 'NOR'}
-world.loc[world['iso_a3'] == '-99', 'iso_a3'] = world.loc[world['iso_a3'] == '-99', 'name'].map(_name_fixes)
 world['cluster'] = world['iso_a3'].map(country_to_cluster)
 world['color'] = world['cluster'].map(CLUSTER_COLORS).fillna('#dddddd')
 
@@ -151,14 +158,36 @@ _xspan = _b['maxx'] - _b['minx']
 _yspan = (_b['maxy'] - _b['miny']).clip(lower=1)
 world_proj = world_proj[(_xspan / _yspan) < 50].reset_index(drop=True)
 
-fig, ax = plt.subplots(figsize=(18, 9))
+fig, ax = plt.subplots(figsize=(12, 9))
 world_proj.plot(ax=ax, color=world_proj['color'], edgecolor='white', linewidth=0.4)
 
-patches = [mpatches.Patch(facecolor=c, label=k) for k, c in CLUSTER_COLORS.items()]
-ax.legend(handles=patches, loc='lower left', fontsize=9, framealpha=0.8)
-ax.set_title('ESC Countries by Regional Cluster', fontsize=14, pad=12)
+# zoom tight to Europe + nearby ESC countries
+from shapely.geometry import box as _box
+_extent = gpd.GeoDataFrame(geometry=[_box(-15, 30, 52, 73)], crs='EPSG:4326')
+_extent_proj = _extent.to_crs('+proj=robin +lon_0=15 +datum=WGS84')
+_xmin, _ymin, _xmax, _ymax = _extent_proj.total_bounds
+ax.set_xlim(_xmin, _xmax)
+ax.set_ylim(_ymin, _ymax)
 ax.axis('off')
+plt.tight_layout(pad=0.5)
 
-plt.tight_layout()
-plt.savefig('regional_map.svg', bbox_inches='tight')
+# Australia inset — flush top-right corner
+from matplotlib.patches import Rectangle as _Rect
+_aus = world_proj[world_proj['iso_a3'] == 'AUS']
+ax_inset = fig.add_axes([0.728, 0.753, 0.31, 0.22])
+ax_inset.add_patch(_Rect((0, 0), 1, 1, transform=ax_inset.transAxes,
+                          facecolor='white', edgecolor='none', zorder=0))
+if len(_aus) > 0:
+    _aus.plot(ax=ax_inset, color=_aus['color'].iloc[0], edgecolor='white', linewidth=0.4)
+    _b = _aus.geometry.iloc[_aus.geometry.area.argmax()].bounds
+    _pad = min(_b[2] - _b[0], _b[3] - _b[1]) * 0.04
+    ax_inset.set_xlim(_b[0] - _pad, _b[2] + _pad)
+    ax_inset.set_ylim(_b[1] - _pad, _b[3] + _pad)
+ax_inset.set_xticks([])
+ax_inset.set_yticks([])
+for _spine in ax_inset.spines.values():
+    _spine.set_linewidth(2.0)
+    _spine.set_edgecolor('#555555')
+
+plt.savefig('regional_map.pdf', bbox_inches='tight')
 plt.show()
