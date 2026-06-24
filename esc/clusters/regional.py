@@ -1,15 +1,53 @@
+POLITICAL_CLUSTERS = {
+    'EU Eurozone':           ['AT', 'BE', 'BG', 'HR', 'CY', 'EE', 'FI', 'FR', 'DE', 'GR',
+                                'IE', 'IT', 'LV', 'LT', 'LU', 'MT', 'NL', 'PT', 'SK', 'SI', 'ES'],
+    'EU Non-Eurozone':       ['CZ', 'DK', 'HU', 'PL', 'RO', 'SE'],
+    'EU Candidates':         ['AL', 'BA', 'GE', 'MD', 'ME', 'MK', 'RS', 'TR', 'UA'],
+    'EFTA / EEA':            ['CH', 'IS', 'NO'],
+    'Post-Brexit':           ['GB', 'GB-WLS'],
+    'Eurasian Economic Union': ['AM', 'BY', 'KZ', 'RU'],
+    'Non-aligned':           ['AD', 'AZ', 'MC', 'SM'],
+    'Non-European':          ['AU', 'IL', 'MA'],
+    'Defunct States':        ['CS', 'YU'],
+}
+
+HISTORICAL_CLUSTERS = {
+    'Former Soviet Union':         ['AM', 'AZ', 'BY', 'EE', 'GE', 'KZ', 'LV', 'LT', 'MD', 'RU', 'UA'],
+    'Former Yugoslavia':           ['BA', 'CS', 'HR', 'ME', 'MK', 'RS', 'SI', 'YU'],
+    'Former Eastern Bloc':         ['AL', 'BG', 'CZ', 'HU', 'PL', 'RO', 'SK'],
+    'Western Bloc (NATO/aligned)': ['AU', 'BE', 'DE', 'DK', 'ES', 'FR', 'GB', 'GB-WLS',
+                                    'GR', 'IL', 'IS', 'IT', 'LU', 'NL', 'NO', 'PT', 'TR'],
+    'Neutral':                     ['AD', 'AT', 'CH', 'FI', 'IE', 'MC', 'SE', 'SM'],
+    'Non-Aligned Movement':        ['CY', 'MA', 'MT'],
+}
+
 REGIONAL_CLUSTERS = {
     'British Isles':     ['GB', 'GB-WLS', 'IE'],
     'Scandinavia':       ['DK', 'FI', 'IS', 'NO', 'SE'],
     'Baltic States':     ['EE', 'LV', 'LT'],
     'Benelux':           ['BE', 'NL', 'LU'],
     'Iberian Peninsula': ['AD', 'ES', 'FR', 'PT'],
-    'Central Europe':    ['AT', 'CH', 'CZ', 'DE', 'HU', 'PL', 'SK'], 
+    'Central Europe':    ['AT', 'CH', 'CZ', 'DE', 'HU', 'PL', 'SK'],
     'Mediterranean':     ['IT', 'MC', 'MT', 'SM'],
     'Balkans':           ['AL', 'BA', 'CS', 'CY', 'GR', 'HR', 'ME', 'MK', 'RS', 'SI', 'TR', 'YU'],
     'Eastern Europe':    ['BY', 'BG', 'MD', 'RO', 'RU', 'UA'],
     'Caucasus':          ['AM', 'AZ', 'GE'],
     'Non-European':      ['AU', 'IL', 'KZ', 'MA'],
+}
+
+CULTURAL_CLUSTERS = {
+    'Anglophone':          ['AU', 'GB', 'GB-WLS', 'IE'],
+    'Nordic':              ['DK', 'FI', 'IS', 'NO', 'SE'],
+    'Baltic':              ['EE', 'LV', 'LT'],
+    'Germanic':            ['AT', 'BE', 'CH', 'DE', 'LU', 'NL'],
+    'Romance':             ['AD', 'FR', 'IT', 'MC', 'MD', 'MT', 'PT', 'RO', 'SM', 'ES'],
+    'East-Central Europe': ['CZ', 'HU', 'PL', 'SK', 'SI', 'HR'],
+    'East Slavic':         ['BY', 'RU', 'UA'],
+    'Balkan':              ['AL', 'BA', 'BG', 'CS', 'ME', 'MK', 'RS', 'YU'],
+    'Hellenic':            ['CY', 'GR'],
+    'Turkic':              ['AZ', 'KZ', 'TR'],
+    'Caucasian':           ['AM', 'GE'],
+    'Semitic':             ['IL', 'MA'],
 }
 
 COUNTRIES = {
@@ -69,22 +107,71 @@ COUNTRIES = {
     'YU': 'Yugoslavia'
 }
 
+import os, zipfile, urllib.request, io as _io
 import geopandas as gpd
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle as _Rect
+from shapely.affinity import translate as _translate
+from shapely.geometry import LineString, box as _box
+from shapely.ops import split, unary_union
 
-CLUSTER_COLORS = {
-    'British Isles':     '#c0392b',  # crimson
-    'Scandinavia':       '#2980b9',  # blue
-    'Baltic States':     '#27ae60',  # green
-    'Benelux':           '#8e44ad',  # purple
-    'Iberian Peninsula': '#e67e22',  # orange
-    'Central Europe':    '#f1c40f',  # yellow
-    'Mediterranean':     '#16a085',  # teal
-    'Balkans':           '#e91e63',  # pink
-    'Eastern Europe':    '#795548',  # brown
-    'Caucasus':          '#00bcd4',  # cyan
-    'Non-European':      '#546e7a',  # slate — was orange, now clearly distinct
+# ── color themes ──────────────────────────────────────────────────────────────
+
+# Regional — blue/teal/indigo family, maximising lightness & sub-hue spread
+REGIONAL_COLORS = {
+    'British Isles':     '#001529',  # near-black navy
+    'Scandinavia':       '#1a237e',  # deep indigo
+    'Baltic States':     '#004d40',  # dark teal
+    'Benelux':           '#1565c0',  # royal blue
+    'Iberian Peninsula': '#00838f',  # medium-dark teal
+    'Central Europe':    '#5c6bc0',  # medium indigo
+    'Mediterranean':     '#039be5',  # bright ocean blue
+    'Balkans':           '#42a5f5',  # light blue
+    'Eastern Europe':    '#b3e5fc',  # very light blue
+    'Caucasus':          '#80deea',  # pale cyan
+    'Non-European':      '#546e7a',  # slate
 }
+
+# Political — red/orange/amber family, maximising lightness & hue spread
+POLITICAL_COLORS = {
+    'EU Eurozone':             '#3e0000',  # near-black crimson
+    'EU Non-Eurozone':         '#c62828',  # dark red
+    'EU Candidates':           '#ff1744',  # vivid red
+    'EFTA / EEA':              '#bf360c',  # dark burnt orange
+    'Post-Brexit':             '#ff6d00',  # vivid orange
+    'Eurasian Economic Union': '#f9a825',  # golden amber
+    'Non-aligned':             '#fff176',  # pale yellow
+    'Non-European':            '#546e7a',  # slate
+    'Defunct States':          '#9e9e9e',  # grey
+}
+
+# Historical — green family, maximising lightness & hue spread (6 clusters)
+HISTORICAL_COLORS = {
+    'Former Soviet Union':         '#0a1f0a',  # near-black forest
+    'Former Yugoslavia':           '#1b5e20',  # dark forest green
+    'Former Eastern Bloc':         '#558b2f',  # olive green
+    'Western Bloc (NATO/aligned)': '#00c853',  # vivid green
+    'Neutral':                     '#c5e1a5',  # pale lime
+    'Non-Aligned Movement':        '#00897b',  # dark teal (strong hue contrast)
+}
+
+# Cultural — violet/purple/magenta/pink family, maximising lightness & hue spread
+CULTURAL_COLORS = {
+    'Anglophone':          '#1a0030',  # near-black violet
+    'Nordic':              '#4527a0',  # dark violet
+    'Baltic':              '#7c4dff',  # vivid blue-violet
+    'Germanic':            '#9c27b0',  # medium purple
+    'East-Central Europe': '#e1bee7',  # pale lavender
+    'Romance':             '#4a0020',  # near-black wine
+    'East Slavic':         '#880e4f',  # dark wine
+    'Balkan':              '#d500f9',  # vivid magenta
+    'Hellenic':            '#e91e63',  # hot pink
+    'Turkic':              '#fce4ec',  # pale blush
+    'Caucasian':           '#ad1457',  # raspberry
+    'Semitic':             '#546e7a',  # slate
+}
+
+# ── ISO mappings ──────────────────────────────────────────────────────────────
 
 ISO2_TO_ISO3 = {
     'AL': 'ALB', 'AD': 'AND', 'AM': 'ARM', 'AU': 'AUS', 'AT': 'AUT',
@@ -100,14 +187,7 @@ ISO2_TO_ISO3 = {
     'GB': 'GBR', 'GB-WLS': 'GBR',
 }
 
-country_to_cluster = {
-    ISO2_TO_ISO3[code]: cluster
-    for cluster, codes in REGIONAL_CLUSTERS.items()
-    for code in codes
-    if code in ISO2_TO_ISO3
-}
-
-import os, zipfile, urllib.request, io as _io
+# ── load & project world geometry once ───────────────────────────────────────
 
 _cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ne_50m_cache')
 _shp = os.path.join(_cache_dir, 'ne_50m_admin_0_countries.shp')
@@ -118,19 +198,13 @@ if not os.path.exists(_shp):
         with zipfile.ZipFile(_io.BytesIO(_r.read())) as _z:
             _z.extractall(_cache_dir)
 
-world = gpd.read_file(_shp)
-world = world[['ISO_A3_EH', 'NAME', 'geometry']].rename(
+_world_raw = gpd.read_file(_shp)
+_world_raw = _world_raw[['ISO_A3_EH', 'NAME', 'geometry']].rename(
     columns={'ISO_A3_EH': 'iso_a3', 'NAME': 'name'})
-world = world.clip([-35, -50, 180, 82])
-world['cluster'] = world['iso_a3'].map(country_to_cluster)
-world['color'] = world['cluster'].map(CLUSTER_COLORS).fillna('#dddddd')
-
-from shapely.affinity import translate as _translate
-from shapely.geometry import LineString
-from shapely.ops import split, unary_union
+_world_raw = _world_raw.clip([-35, -50, 180, 82])
 
 def _cut_at_antimeridian(geom, lon_0=15):
-    geom = geom.buffer(0)  # fix invalid geometry
+    geom = geom.buffer(0)
     for cut_lon, xoff, check in [
         (lon_0 - 180,  360, lambda cx: cx < lon_0 - 180),
         (lon_0 + 180, -360, lambda cx: cx > lon_0 + 180),
@@ -147,47 +221,63 @@ def _cut_at_antimeridian(geom, lon_0=15):
             pass
     return geom
 
-world = world.explode(index_parts=False).reset_index(drop=True)
-world['geometry'] = world['geometry'].apply(_cut_at_antimeridian)
-world_proj = world.to_crs('+proj=robin +lon_0=15 +datum=WGS84')
-world_proj = world_proj.explode(index_parts=False).reset_index(drop=True)
+_world_raw = _world_raw.explode(index_parts=False).reset_index(drop=True)
+_world_raw['geometry'] = _world_raw['geometry'].apply(_cut_at_antimeridian)
+_world_proj = _world_raw.to_crs('+proj=robin +lon_0=15 +datum=WGS84')
+_world_proj = _world_proj.explode(index_parts=False).reset_index(drop=True)
 
-# drop artifact strips: real geography is never >50:1 wide vs tall
-_b = world_proj.geometry.bounds
+_b = _world_proj.geometry.bounds
 _xspan = _b['maxx'] - _b['minx']
 _yspan = (_b['maxy'] - _b['miny']).clip(lower=1)
-world_proj = world_proj[(_xspan / _yspan) < 50].reset_index(drop=True)
+_world_proj = _world_proj[(_xspan / _yspan) < 50].reset_index(drop=True)
 
-fig, ax = plt.subplots(figsize=(12, 9))
-world_proj.plot(ax=ax, color=world_proj['color'], edgecolor='white', linewidth=0.4)
-
-# zoom tight to Europe + nearby ESC countries
-from shapely.geometry import box as _box
-_extent = gpd.GeoDataFrame(geometry=[_box(-15, 30, 52, 73)], crs='EPSG:4326')
-_extent_proj = _extent.to_crs('+proj=robin +lon_0=15 +datum=WGS84')
+_extent_proj = gpd.GeoDataFrame(
+    geometry=[_box(-15, 30, 52, 71)], crs='EPSG:4326'
+).to_crs('+proj=robin +lon_0=15 +datum=WGS84')
 _xmin, _ymin, _xmax, _ymax = _extent_proj.total_bounds
-ax.set_xlim(_xmin, _xmax)
-ax.set_ylim(_ymin, _ymax)
-ax.axis('off')
-plt.tight_layout(pad=0.5)
 
-# Australia inset — flush top-right corner
-from matplotlib.patches import Rectangle as _Rect
-_aus = world_proj[world_proj['iso_a3'] == 'AUS']
-ax_inset = fig.add_axes([0.728, 0.753, 0.31, 0.22])
-ax_inset.add_patch(_Rect((0, 0), 1, 1, transform=ax_inset.transAxes,
-                          facecolor='white', edgecolor='none', zorder=0))
-if len(_aus) > 0:
-    _aus.plot(ax=ax_inset, color=_aus['color'].iloc[0], edgecolor='white', linewidth=0.4)
-    _b = _aus.geometry.iloc[_aus.geometry.area.argmax()].bounds
-    _pad = min(_b[2] - _b[0], _b[3] - _b[1]) * 0.04
-    ax_inset.set_xlim(_b[0] - _pad, _b[2] + _pad)
-    ax_inset.set_ylim(_b[1] - _pad, _b[3] + _pad)
-ax_inset.set_xticks([])
-ax_inset.set_yticks([])
-for _spine in ax_inset.spines.values():
-    _spine.set_linewidth(2.0)
-    _spine.set_edgecolor('#555555')
+# ── map function ──────────────────────────────────────────────────────────────
 
-plt.savefig('regional_map.pdf', bbox_inches='tight')
-plt.show()
+def make_cluster_map(cluster_dict, colors, filename):
+    ctc = {
+        ISO2_TO_ISO3[code]: cluster
+        for cluster, codes in cluster_dict.items()
+        for code in codes
+        if code in ISO2_TO_ISO3
+    }
+    wp = _world_proj.copy()
+    wp['color'] = wp['iso_a3'].map(ctc).map(colors).fillna('#dddddd')
+
+    fig, ax = plt.subplots(figsize=(12, 9))
+    wp.plot(ax=ax, color=wp['color'], edgecolor='white', linewidth=0.4)
+    ax.set_xlim(_xmin, _xmax)
+    ax.set_ylim(_ymin, _ymax)
+    ax.axis('off')
+    plt.tight_layout(pad=0.5)
+
+    # Australia inset — top-right corner
+    _aus = wp[wp['iso_a3'] == 'AUS']
+    ax_inset = fig.add_axes([0.728, 0.753, 0.31, 0.22])
+    ax_inset.add_patch(_Rect((0, 0), 1, 1, transform=ax_inset.transAxes,
+                              facecolor='white', edgecolor='none', zorder=0))
+    if len(_aus) > 0:
+        _aus.plot(ax=ax_inset, color=_aus['color'].iloc[0], edgecolor='white', linewidth=0.4)
+        _bb = _aus.geometry.iloc[_aus.geometry.area.argmax()].bounds
+        _pad = min(_bb[2] - _bb[0], _bb[3] - _bb[1]) * 0.04
+        ax_inset.set_xlim(_bb[0] - _pad, _bb[2] + _pad)
+        ax_inset.set_ylim(_bb[1] - _pad, _bb[3] + _pad)
+    ax_inset.set_xticks([])
+    ax_inset.set_yticks([])
+    for _spine in ax_inset.spines.values():
+        _spine.set_linewidth(2.0)
+        _spine.set_edgecolor('#555555')
+
+    plt.savefig(filename, bbox_inches='tight')
+    plt.show()
+
+# ── generate all four maps ────────────────────────────────────────────────────
+
+make_cluster_map(REGIONAL_CLUSTERS,   REGIONAL_COLORS,   'regional_map.pdf')
+make_cluster_map(POLITICAL_CLUSTERS,  POLITICAL_COLORS,  'political_map.pdf')
+make_cluster_map(HISTORICAL_CLUSTERS, HISTORICAL_COLORS, 'historical_map.pdf')
+make_cluster_map(CULTURAL_CLUSTERS,   CULTURAL_COLORS,   'cultural_map.pdf')
