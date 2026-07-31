@@ -277,7 +277,7 @@ def make_cluster_map(cluster_dict, colors, filename):
 
 # ── generate all four maps ────────────────────────────────────────────────────
 
-make_cluster_map(REGIONAL_CLUSTERS,   REGIONAL_COLORS,   'regional_map.pdf')
-make_cluster_map(POLITICAL_CLUSTERS,  POLITICAL_COLORS,  'political_map.pdf')
-make_cluster_map(HISTORICAL_CLUSTERS, HISTORICAL_COLORS, 'historical_map.pdf')
-make_cluster_map(CULTURAL_CLUSTERS,   CULTURAL_COLORS,   'cultural_map.pdf')
+make_cluster_map(REGIONAL_CLUSTERS,   REGIONAL_COLORS,   'regional_map.svg')
+make_cluster_map(POLITICAL_CLUSTERS,  POLITICAL_COLORS,  'political_map.svg')
+make_cluster_map(HISTORICAL_CLUSTERS, HISTORICAL_COLORS, 'historical_map.svg')
+make_cluster_map(CULTURAL_CLUSTERS,   CULTURAL_COLORS,   'cultural_map.svg')
